@@ -1,17 +1,105 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"
+import * as mime from 'mime-types';
+import * as crypto from 'crypto';
 
-// Remember to rename these classes and interfaces!
+import {
+	Notice,
+	Plugin,
+	Editor,
+	MarkdownView,
+	EditorPosition,
+} from "obsidian";
 
-interface MyPluginSettings {
-	mySetting: string;
+  // Remember to rename these classes and interfaces!
+
+interface pasteFunction {
+	(this: HTMLElement, event: ClipboardEvent): void;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+interface S3UploaderSettings {
+	accessKey: string;
+	secretKey: string;
+	region: string;
+	bucket: string;
+	folder: string;
+	apiEndpoint: string;
+	uploadHeader: string;
+	uploadBody: string;
+	imageUrlPath: string;
+	maxWidth: number;
+}
+
+const DEFAULT_SETTINGS: S3UploaderSettings = {
+	accessKey: '',
+	secretKey: '',
+	region: '',
+	bucket: '',
+	folder: '',
+	apiEndpoint: null,
+	uploadHeader: null,
+	uploadBody: "{\"image\": \"$FILE\"}",
+	imageUrlPath: null,
+	maxWidth: 4096,
 }
 
 export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+	settings: S3UploaderSettings;
+	s3: S3Client;
+	pasteFunction: pasteFunction;
+
+	private replaceText(editor: Editor, target: string, replacement: string): void {
+		target = target.trim()
+		const lines = editor.getValue().split("\n");
+		for (let i = 0; i < lines.length; i++) {
+			const ch = lines[i].indexOf(target)
+			if (ch !== -1) {
+				const from = { line: i, ch: ch } as EditorPosition;
+				const to = { line: i, ch: ch + target.length } as EditorPosition;
+				editor.setCursor(from);
+				editor.replaceRange(replacement, from, to);
+				break;
+			}
+		}
+	}
+
+	async pasteHandler(ev: ClipboardEvent, editor: Editor, mkView: MarkdownView): Promise<void> {
+		if (ev.defaultPrevented) {
+			console.log("paste event is canceled");
+			return;
+		}
+	
+		let file = ev.clipboardData.files[0];
+
+		const imageType = /image.*/;
+		if (file.type.match(imageType)) {
+	
+			ev.preventDefault();
+	
+			// set the placeholder text
+			const buf = await file.arrayBuffer()
+			const digest = crypto.createHash('md5').update(new Uint8Array(buf)).digest("hex");
+			const contentType = mime.lookup(file.name);
+			const newFileName = digest+"."+mime.extension(contentType);
+			const pastePlaceText = `![uploading...](${newFileName})\n`
+			editor.replaceSelection(pastePlaceText)
+	
+			// upload the image
+			const key = this.settings.folder ? "/" + newFileName : newFileName;
+			this.s3.send(new PutObjectCommand({
+				Bucket: this.settings.bucket,
+				Key: key,
+				Body: file,
+				ContentType: contentType,
+			})).then(res => {
+				const url = this.settings.imageUrlPath + key;
+				const imgMarkdownText = `![image](${url})`
+				this.replaceText(editor, pastePlaceText, imgMarkdownText)
+			}).catch(err => {
+				console.log(err);
+			});
+		}
+	}
 
 	async onload() {
 		await this.loadSettings();
@@ -28,54 +116,26 @@ export default class MyPlugin extends Plugin {
 		const statusBarItemEl = this.addStatusBarItem();
 		statusBarItemEl.setText('Status Bar Text');
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new S3UploaderSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
+		this.settings.apiEndpoint = `https://s3.${this.settings.region}.amazonaws.com/`;
+		this.settings.imageUrlPath = `https://${this.settings.bucket}.s3.${this.settings.region}.amazonaws.com/`;
+		this.s3 = new S3Client({
+			region: this.settings.region,
+			credentials: {
+				accessKeyId: this.settings.accessKey,
+				secretAccessKey: this.settings.secretKey,
+			},
+			endpoint: this.settings.apiEndpoint,
 		});
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.pasteFunction = this.pasteHandler.bind(this);
+
+		this.registerEvent(
+			this.app.workspace.on('editor-paste', this.pasteFunction)
+		);
 	}
 
 	onunload() {
@@ -98,7 +158,7 @@ class SampleModal extends Modal {
 
 	onOpen() {
 		const {contentEl} = this;
-		contentEl.setText('Woah!');
+		contentEl.setText('Jamie!');
 	}
 
 	onClose() {
@@ -107,7 +167,7 @@ class SampleModal extends Modal {
 	}
 }
 
-class SampleSettingTab extends PluginSettingTab {
+class S3UploaderSettingTab extends PluginSettingTab {
 	plugin: MyPlugin;
 
 	constructor(app: App, plugin: MyPlugin) {
@@ -120,18 +180,62 @@ class SampleSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl('h2', {text: 'Settings for my awesome plugin.'});
+		containerEl.createEl('h2', {text: 'Settings for s3 Image Uploader.'});
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('AWS Access Key')
+			.setDesc('aws access key')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setPlaceholder('access key')
+				.setValue(this.plugin.settings.accessKey)
 				.onChange(async (value) => {
-					console.log('Secret: ' + value);
-					this.plugin.settings.mySetting = value;
+					console.log('ID: ' + value);
+					this.plugin.settings.accessKey = value;
 					await this.plugin.saveSettings();
 				}));
-	}
+		new Setting(containerEl)
+		.setName('AWS Secret Key')
+		.setDesc('aws secret key')
+		.addText(text => text
+			.setPlaceholder('secret key')
+			.setValue(this.plugin.settings.secretKey)
+			.onChange(async (value) => {
+				console.log('Secret: ' + value);
+				this.plugin.settings.secretKey = value;
+				await this.plugin.saveSettings();
+			}));
+		new Setting(containerEl)
+		.setName('Region')
+		.setDesc('aws region')
+		.addText(text => text
+			.setPlaceholder('aws region')
+			.setValue(this.plugin.settings.region)
+			.onChange(async (value) => {
+				console.log('Region: ' + value);
+				this.plugin.settings.region = value;
+				await this.plugin.saveSettings();
+			}));
+		new Setting(containerEl)
+		.setName('s3 Bucket')
+		.setDesc('s3 bucket name')
+		.addText(text => text
+			.setPlaceholder('bucket name')
+			.setValue(this.plugin.settings.bucket)
+			.onChange(async (value) => {
+				console.log('Bucket: ' + value);
+				this.plugin.settings.bucket = value;
+				await this.plugin.saveSettings();
+			}));
+		new Setting(containerEl)
+		.setName('bucket folder')
+		.setDesc('optional folder in s3 bucket')
+		.addText(text => text
+			.setPlaceholder('folder')
+			.setValue(this.plugin.settings.folder)
+			.onChange(async (value) => {
+				console.log('Folder: ' + value);
+				this.plugin.settings.folder = value;
+				await this.plugin.saveSettings();
+			}));
+		}
 }
