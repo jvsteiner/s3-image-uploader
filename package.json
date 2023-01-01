@@ -12,6 +12,7 @@
 	"author": "jvsteiner@gmail.com",
 	"license": "MIT",
 	"devDependencies": {
+		"@types/mime-types": "^2.1.1",
 		"@typescript-eslint/eslint-plugin": "5.29.0",
 		"@typescript-eslint/parser": "5.29.0",
 		"browser-resolve": "^2.0.0",
