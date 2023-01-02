@@ -5,12 +5,13 @@ import {
 	Plugin,
 	PluginSettingTab,
 	Setting,
+	TextComponent,
 	EditorPosition,
 } from "obsidian";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import * as mime from "mime-types";
 import * as crypto from "crypto";
+import { createElement, Eye, EyeOff } from "lucide";
 
 // Remember to rename these classes and interfaces!
 
@@ -26,7 +27,7 @@ interface S3UploaderSettings {
 	folder: string;
 	apiEndpoint: string;
 	imageUrlPath: string;
-	dragAndDrop: boolean;
+	uploadOnDrag: boolean;
 	localUpload: boolean;
 	localUploadFolder: string;
 }
@@ -39,7 +40,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	folder: "",
 	apiEndpoint: "",
 	imageUrlPath: "",
-	dragAndDrop: true,
+	uploadOnDrag: true,
 	localUpload: false,
 	localUploadFolder: "",
 };
@@ -84,19 +85,28 @@ export default class MyPlugin extends Plugin {
 
 		if (!noteFile || !noteFile.name) return;
 
+		// Handle frontmatter settings
 		const fm = this.app.metadataCache.getFileCache(noteFile).frontmatter;
-		const perDocumentUpload = fm && fm.uploadOnDrag;
-		const perDocumentUploadFolder = fm ? fm.uploadFolder : null;
+		const fmUploadOnDrag = fm && fm.uploadOnDrag;
+		const fmLocalUpload = fm && fm.localUpload;
+		const fmUploadFolder = fm ? fm.localUploadFolder : null;
+
+		const localUpload = fmLocalUpload
+			? fmLocalUpload
+			: this.settings.localUpload;
 
 		let file = null;
 
-		if (ev.dataTransfer && ev.dataTransfer !== null) {
-			if (!this.settings.dragAndDrop && !perDocumentUpload) {
-				return;
-			}
-			file = ev.dataTransfer.files[0];
-		} else {
-			file = ev.clipboardData.files[0];
+		// figure out what kind of event we're handling
+		switch (ev.type) {
+			case "paste":
+				file = ev.clipboardData.files[0];
+				break;
+			case "drop":
+				if (!this.settings.uploadOnDrag && !fmUploadOnDrag) {
+					return;
+				}
+				file = ev.dataTransfer.files[0];
 		}
 
 		const imageType = /image.*/;
@@ -109,25 +119,29 @@ export default class MyPlugin extends Plugin {
 				.createHash("md5")
 				.update(new Uint8Array(buf))
 				.digest("hex");
-			const contentType = mime.lookup(file.name);
-			const newFileName = digest + "." + mime.extension(contentType);
+			const contentType = file.type;
+			const newFileName =
+				digest +
+				"." +
+				file.name.slice(((file.name.lastIndexOf(".") - 1) >>> 0) + 2);
 			const pastePlaceText = `![uploading...](${newFileName})\n`;
 			editor.replaceSelection(pastePlaceText);
 
 			// upload the image
-			const folder = perDocumentUploadFolder
-				? perDocumentUploadFolder
+			const folder = fmUploadFolder
+				? fmUploadFolder
 				: this.settings.folder;
 			const key = folder ? folder + "/" + newFileName : newFileName;
 
-			if (!this.settings.localUpload) {
+			if (!localUpload) {
+				// Use S3
 				this.s3
 					.send(
 						new PutObjectCommand({
 							Bucket: this.settings.bucket,
 							Key: key,
 							Body: file,
-							ContentType: contentType,
+							ContentType: contentType ? contentType : undefined,
 						})
 					)
 					.then((res) => {
@@ -138,17 +152,21 @@ export default class MyPlugin extends Plugin {
 							pastePlaceText,
 							imgMarkdownText
 						);
-						new Notice("Image uploaded to S3");
+						new Notice(
+							`Image uploaded to S3 bucket: ${this.settings.bucket}`
+						);
 					})
 					.catch((err) => {
 						console.log(err);
 						new Notice(
-							"Error uploading image to S3: " + err.message
+							`Error uploading image to S3 bucket ${this.settings.bucket}: ` +
+								err.message
 						);
 					});
 			} else {
-				const localUploadFolder = perDocumentUploadFolder
-					? perDocumentUploadFolder
+				// Use local upload
+				const localUploadFolder = fmUploadFolder
+					? fmUploadFolder
 					: this.settings.localUploadFolder;
 				const localUploadPath = localUploadFolder
 					? localUploadFolder + "/" + newFileName
@@ -163,12 +181,14 @@ export default class MyPlugin extends Plugin {
 							pastePlaceText,
 							imgMarkdownText
 						);
-						new Notice("Image uploaded to local folder");
+						new Notice(
+							`Image uploaded to ${localUploadFolder} folder`
+						);
 					})
 					.catch((err) => {
 						console.log(err);
 						new Notice(
-							"Error uploading image to local folder: " +
+							`Error uploading image to ${localUploadFolder} folder: ` +
 								err.message
 						);
 					});
@@ -233,86 +253,104 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		containerEl.createEl("h2", { text: "Settings for S3 Image Uploader" });
 
+		containerEl.createEl("br");
+
+		const coffeeDiv = containerEl.createDiv("coffee");
+		const coffeeLink = coffeeDiv.createEl("a", {
+			href: "https://www.buymeacoffee.com/jvsteiner",
+		});
+		const coffeeImg = coffeeLink.createEl("img", {
+			attr: {
+				src: "https://cdn.buymeacoffee.com/buttons/v2/default-blue.png",
+			},
+		});
+		coffeeImg.height = 45;
+		containerEl.createEl("br");
+
 		new Setting(containerEl)
 			.setName("AWS Access Key ID")
-			.setDesc("AWS access key ID for an S3 permissioned user")
-			.addText((text) =>
-				text
-					.setPlaceholder("access key")
+			.setDesc("AWS access key ID for a user with S3 access.")
+			.addText((text) => {
+				wrapTextWithPasswordHide(text);
+				text.setPlaceholder("access key")
 					.setValue(this.plugin.settings.accessKey)
 					.onChange(async (value) => {
-						this.plugin.settings.accessKey = value;
+						this.plugin.settings.accessKey = value.trim();
 						await this.plugin.saveSettings();
-					})
-			);
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("AWS Secret Key")
-			.setDesc("AWS secret key for that user")
-			.addText((text) =>
-				text
-					.setPlaceholder("secret key")
+			.setDesc("AWS secret key for that user.")
+			.addText((text) => {
+				wrapTextWithPasswordHide(text);
+				text.setPlaceholder("secret key")
 					.setValue(this.plugin.settings.secretKey)
 					.onChange(async (value) => {
-						this.plugin.settings.secretKey = value;
+						this.plugin.settings.secretKey = value.trim();
 						await this.plugin.saveSettings();
-					})
-			);
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Region")
-			.setDesc("AWS region of the S3 bucket")
+			.setDesc("AWS region of the S3 bucket.")
 			.addText((text) =>
 				text
 					.setPlaceholder("aws region")
 					.setValue(this.plugin.settings.region)
 					.onChange(async (value) => {
-						this.plugin.settings.region = value;
+						this.plugin.settings.region = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
 			.setName("S3 Bucket")
-			.setDesc("S3 bucket name")
+			.setDesc("S3 bucket name.")
 			.addText((text) =>
 				text
 					.setPlaceholder("bucket name")
 					.setValue(this.plugin.settings.bucket)
 					.onChange(async (value) => {
-						this.plugin.settings.bucket = value;
+						this.plugin.settings.bucket = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
 			.setName("Bucket folder")
-			.setDesc("Optional folder in s3 bucket")
+			.setDesc("Optional folder in s3 bucket.")
 			.addText((text) =>
 				text
 					.setPlaceholder("folder")
 					.setValue(this.plugin.settings.folder)
 					.onChange(async (value) => {
-						this.plugin.settings.folder = value;
+						this.plugin.settings.folder = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 
 		new Setting(containerEl)
 			.setName("Upload on drag")
-			.setDesc("Upload drag and drop images as well as pasted images.")
+			.setDesc(
+				"Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note."
+			)
 			.addToggle((toggle) => {
 				toggle
-					.setValue(this.plugin.settings.dragAndDrop)
+					.setValue(this.plugin.settings.uploadOnDrag)
 					.onChange(async (value) => {
-						this.plugin.settings.dragAndDrop = value;
+						this.plugin.settings.uploadOnDrag = value;
 						await this.plugin.saveSettings();
 					});
 			});
 
 		new Setting(containerEl)
 			.setName("Copy to local folder")
-			.setDesc("Copy images to local folder instead of s3.")
+			.setDesc(
+				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `uploadLocal: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3."
+			)
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.localUpload)
@@ -324,15 +362,43 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Local folder")
-			.setDesc("Local folder to save images, instead of s3")
+			.setDesc(
+				'Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note.  This affects only local uploads.'
+			)
 			.addText((text) =>
 				text
 					.setPlaceholder("folder")
 					.setValue(this.plugin.settings.localUploadFolder)
 					.onChange(async (value) => {
-						this.plugin.settings.localUploadFolder = value;
+						this.plugin.settings.localUploadFolder = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
 	}
 }
+
+const wrapTextWithPasswordHide = (text: TextComponent) => {
+	const { eye, eyeOff } = getEyesElements();
+	const hider = text.inputEl.insertAdjacentElement("afterend", createSpan());
+	// the init type of hider is "hidden" === eyeOff === password
+	hider.innerHTML = eyeOff;
+	hider.addEventListener("click", (e) => {
+		const isText = text.inputEl.getAttribute("type") === "text";
+		hider.innerHTML = isText ? eyeOff : eye;
+		text.inputEl.setAttribute("type", isText ? "password" : "text");
+		text.inputEl.focus();
+	});
+
+	// the init type of text el is password
+	text.inputEl.setAttribute("type", "password");
+	return text;
+};
+
+const getEyesElements = () => {
+	const eyeEl = createElement(Eye);
+	const eyeOffEl = createElement(EyeOff);
+	return {
+		eye: eyeEl.outerHTML,
+		eyeOff: eyeOffEl.outerHTML,
+	};
+};

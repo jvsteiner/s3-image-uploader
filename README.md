@@ -1,8 +1,10 @@
-# Obsidian Sample Plugin
+# S3 Image Uploader
 
-This is a plugin for Obsidian (https://obsidian.md). It was generated based on the [standard plugin template](https://github.com/obsidianmd/obsidian-sample-plugin).
+This is a plugin for [Obsidian](https://obsidian.md). It was generated based on the [standard plugin template](https://github.com/obsidianmd/obsidian-sample-plugin).
 
 This project implements an image uploader, similar to others offered by the community, with one important difference: you can provide your own s3 based storage, instead of relying on a third party service, such as `imgur`.
+
+This plugin is supported by advertisements.
 
 Note: this plugin is still in development, and there maybe some bugs. Please report any issues you find.
 
@@ -16,10 +18,10 @@ It was inspired by the awesome Markdown editor, Typora, and the following Obsidi
 
 You have to set up your own s3 bucket, and provide the following information to the plugin:
 
--   `bucket`: the name of your bucket (must already exist)
--   `region`: the region of your bucket
--   `accessKeyId`: the access key id for an s3 user with write access to your bucket
+-   `accessKeyId`: the access key ID for an s3 user with write access to your bucket
 -   `secretAccessKey`: the secret access key for the s3 user
+-   `region`: the region of your bucket
+-   `bucket`: the name of your bucket (must already exist)
 -   `folder`: the folder in your bucket where you want to store the images (optional, and will be created on the fly if it does not exist.)
 
 If you want others to be able to view the images, you need to make your bucket world readable. You can do this by adding the following policy to your bucket:
@@ -56,12 +58,21 @@ You also need to set up a user with write access to your bucket. You can do this
 
 When you paste an image from the clipboard into the Obsidian note, the plugin will upload the image to your bucket, and insert a link to the image in your note. The link will be of the form `https://<your-bucket>.s3.<your-region>.amazonaws.com/<your-optional-folder>/<image-name>`. If you have made your bucket world readable, you can share the link with others, and they will be able to view the image.
 
-If you select the "Upload on drag" option in the plugin settings, the plugin will also upload images that you drag into the note. This is useful if you want to upload images from your file system. If you do not want this behavior in all notes, you can enable it on a per note basis by adding a YAML frontmatter atg to the note, as seen below. You can also set the folder where the images will be uploaded to, by adding the `uploadFolder` option to the YAML frontmatter. These setting override the global settings.
+If you select the "Upload on drag" option in the plugin settings, the plugin will also upload images that you drag into the note. This is useful if you want to upload images from your file system.
+
+If you do not want this behavior in all notes, you can customize it on a per note basis.
+
+1. You can add an `uploadOnDrag` YAML frontmatter tag to the note, as seen below.
+2. You can also set the `localUpload` option to `true`, which will copy the images to a folder in your local file system, instead of uploading them to the cloud, overriding the global setting.
+3. You can also set note specific folder where the images will be uploaded to, by adding the `localUploadFolder` option to the YAML frontmatter. This overrides the global setting.
+
+These settings override the global settings. The `uploadOnDrag` tag affects both S3 and local uploads. The other two options only affect local uploads.
 
 ```
 ---
 uploadOnDrag: true
-uploadFolder: "my-folder"
+localUpload: true
+localUploadFolder: "my-folder"
 ---
 ```
 
