@@ -16,7 +16,7 @@ import { createElement, Eye, EyeOff } from "lucide";
 // Remember to rename these classes and interfaces!
 
 interface pasteFunction {
-	(this: HTMLElement, event: ClipboardEvent): void;
+	(this: HTMLElement, event: ClipboardEvent | DragEvent): void;
 }
 
 interface S3UploaderSettings {
@@ -86,7 +86,7 @@ export default class MyPlugin extends Plugin {
 		if (!noteFile || !noteFile.name) return;
 
 		// Handle frontmatter settings
-		const fm = this.app.metadataCache.getFileCache(noteFile).frontmatter;
+		const fm = this.app.metadataCache.getFileCache(noteFile)?.frontmatter;
 		const fmUploadOnDrag = fm && fm.uploadOnDrag;
 		const fmLocalUpload = fm && fm.localUpload;
 		const fmUploadFolder = fm ? fm.localUploadFolder : null;
@@ -100,17 +100,17 @@ export default class MyPlugin extends Plugin {
 		// figure out what kind of event we're handling
 		switch (ev.type) {
 			case "paste":
-				file = ev.clipboardData.files[0];
+				file = (ev as ClipboardEvent).clipboardData?.files[0];
 				break;
 			case "drop":
 				if (!this.settings.uploadOnDrag && !fmUploadOnDrag) {
 					return;
 				}
-				file = ev.dataTransfer.files[0];
+				file = (ev as DragEvent).dataTransfer?.files[0];
 		}
 
 		const imageType = /image.*/;
-		if (file.type.match(imageType)) {
+		if (file?.type.match(imageType)) {
 			ev.preventDefault();
 
 			// set the placeholder text
@@ -381,8 +381,10 @@ const wrapTextWithPasswordHide = (text: TextComponent) => {
 	const { eye, eyeOff } = getEyesElements();
 	const hider = text.inputEl.insertAdjacentElement("afterend", createSpan());
 	// the init type of hider is "hidden" === eyeOff === password
-	hider.innerHTML = eyeOff;
-	hider.addEventListener("click", (e) => {
+	if (hider) {
+		hider.innerHTML = eyeOff;
+	}
+	hider?.addEventListener("click", (e) => {
 		const isText = text.inputEl.getAttribute("type") === "text";
 		hider.innerHTML = isText ? eyeOff : eye;
 		text.inputEl.setAttribute("type", isText ? "password" : "text");
