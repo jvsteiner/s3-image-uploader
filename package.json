@@ -26,7 +26,6 @@
 		"typescript": "4.7.4"
 	},
 	"dependencies": {
-		"@aws-sdk/client-s3": "^3.241.0",
-		"lucide": "^0.104.0"
+		"@aws-sdk/client-s3": "^3.241.0"
 	}
 }

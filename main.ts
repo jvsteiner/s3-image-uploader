@@ -7,11 +7,11 @@ import {
 	Setting,
 	TextComponent,
 	EditorPosition,
+	setIcon,
 } from "obsidian";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import * as crypto from "crypto";
-import { createElement, Eye, EyeOff } from "lucide";
 
 // Remember to rename these classes and interfaces!
 
@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	localUploadFolder: "",
 };
 
-export default class MyPlugin extends Plugin {
+export default class S3UploaderPlugin extends Plugin {
 	settings: S3UploaderSettings;
 	s3: S3Client;
 	pasteFunction: pasteFunction;
@@ -77,7 +77,6 @@ export default class MyPlugin extends Plugin {
 		editor: Editor
 	): Promise<void> {
 		if (ev.defaultPrevented) {
-			console.log("paste event is canceled");
 			return;
 		}
 
@@ -157,7 +156,7 @@ export default class MyPlugin extends Plugin {
 						);
 					})
 					.catch((err) => {
-						console.log(err);
+						console.error(err);
 						new Notice(
 							`Error uploading image to S3 bucket ${this.settings.bucket}: ` +
 								err.message
@@ -239,9 +238,9 @@ export default class MyPlugin extends Plugin {
 }
 
 class S3UploaderSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: S3UploaderPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: S3UploaderPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -378,29 +377,25 @@ class S3UploaderSettingTab extends PluginSettingTab {
 }
 
 const wrapTextWithPasswordHide = (text: TextComponent) => {
-	const { eye, eyeOff } = getEyesElements();
-	const hider = text.inputEl.insertAdjacentElement("afterend", createSpan());
-	// the init type of hider is "hidden" === eyeOff === password
-	if (hider) {
-		hider.innerHTML = eyeOff;
+	const hider = text.inputEl.insertAdjacentElement("beforebegin", createSpan());
+	if (!hider) {
+		return
 	}
-	hider?.addEventListener("click", (e) => {
+	// const hider = text.inputEl.createEl('span');
+	setIcon(hider as HTMLElement, 'eye-off');
+
+	hider.addEventListener("click", ()=> {
 		const isText = text.inputEl.getAttribute("type") === "text";
-		hider.innerHTML = isText ? eyeOff : eye;
-		text.inputEl.setAttribute("type", isText ? "password" : "text");
+		if(isText) {
+			setIcon(hider as HTMLElement, 'eye-off');
+			text.inputEl.setAttribute("type", "password");
+		}else {
+			setIcon(hider as HTMLElement, 'eye')
+			text.inputEl.setAttribute("type", "text");
+		};
 		text.inputEl.focus();
 	});
-
-	// the init type of text el is password
 	text.inputEl.setAttribute("type", "password");
 	return text;
 };
 
-const getEyesElements = () => {
-	const eyeEl = createElement(Eye);
-	const eyeOffEl = createElement(EyeOff);
-	return {
-		eye: eyeEl.outerHTML,
-		eyeOff: eyeOffEl.outerHTML,
-	};
-};
