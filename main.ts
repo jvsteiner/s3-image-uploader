@@ -8,6 +8,7 @@ import {
 	TextComponent,
 	EditorPosition,
 	setIcon,
+	FileSystemAdapter
 } from "obsidian";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -31,6 +32,9 @@ interface S3UploaderSettings {
 	localUploadFolder: string;
 	customEndpoint: string;
 	forcePathStyle: boolean;
+	uploadVideo: boolean;
+	uploadAudio: boolean;
+	uploadPdf: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -45,6 +49,9 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	localUploadFolder: "",
 	customEndpoint: "",
 	forcePathStyle: false,
+	uploadVideo: false,
+	uploadAudio: false,
+	uploadPdf: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -91,11 +98,27 @@ export default class S3UploaderPlugin extends Plugin {
 		const fmUploadOnDrag = fm && fm.uploadOnDrag;
 		const fmLocalUpload = fm && fm.localUpload;
 		const fmUploadFolder = fm ? fm.localUploadFolder : null;
+		const fmUploadVideo = fm && fm.uploadVideo;
+		const fmUploadAudio = fm && fm.uploadAudio;
+		const fmUploadPdf = fm && fm.uploadPdf;
+
 
 		const localUpload = fmLocalUpload
 			? fmLocalUpload
 			: this.settings.localUpload;
 
+		const uploadVideo = fmUploadVideo
+			? fmUploadVideo
+			: this.settings.uploadVideo;
+
+		const uploadAudio = fmUploadAudio
+			? fmUploadAudio
+			: this.settings.uploadAudio;
+
+		const uploadPdf = fmUploadPdf
+			? fmUploadPdf
+			: this.settings.uploadPdf;
+		
 		let file = null;
 
 		// figure out what kind of event we're handling
@@ -111,7 +134,27 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 
 		const imageType = /image.*/;
-		if (file?.type.match(imageType)) {
+		const videoType = /video.*/;
+		const audioType = /audio.*/;
+		const pdfType = /application\/pdf/;
+
+		let thisType = "";
+
+		if (file?.type.match(videoType) && uploadVideo) {
+			thisType = "video";
+			console.log("video");
+		} else if (file?.type.match(audioType) && uploadAudio) {
+			thisType = "audio";
+			console.log("audio");
+		} else if  (file?.type.match(pdfType) && uploadPdf) {
+			thisType = "pdf";
+			console.log("pdf");
+		} else if (file?.type.match(imageType)) {
+			thisType = "image";
+		}
+
+
+		if (thisType && file) {
 			ev.preventDefault();
 
 			// set the placeholder text
@@ -120,11 +163,11 @@ export default class S3UploaderPlugin extends Plugin {
 				.createHash("md5")
 				.update(new Uint8Array(buf))
 				.digest("hex");
-			const contentType = file.type;
+			const contentType = file?.type;
 			const newFileName =
 				digest +
 				"." +
-				file.name.slice(((file.name.lastIndexOf(".") - 1) >>> 0) + 2);
+				file.name.slice(((file?.name.lastIndexOf(".") - 1) >>> 0) + 2);
 			const pastePlaceText = `![uploading...](${newFileName})\n`;
 			editor.replaceSelection(pastePlaceText);
 
@@ -147,7 +190,10 @@ export default class S3UploaderPlugin extends Plugin {
 					)
 					.then((res) => {
 						const url = this.settings.imageUrlPath + key;
-						const imgMarkdownText = `![image](${url})`;
+						// const imgMarkdownText = `![image](${url})`;
+						const imgMarkdownText = wrapFileDependingOnType(url, thisType, '');
+
+
 						this.replaceText(
 							editor,
 							pastePlaceText,
@@ -176,7 +222,13 @@ export default class S3UploaderPlugin extends Plugin {
 				this.app.vault.adapter
 					.writeBinary(localUploadPath, buf)
 					.then(() => {
-						const imgMarkdownText = `![image](${localUploadPath})`;
+
+						let basePath = '';
+						const adapter = this.app.vault.adapter;
+						if (adapter instanceof FileSystemAdapter) {
+    						basePath = adapter.getBasePath();
+						}
+						const imgMarkdownText = wrapFileDependingOnType(localUploadPath, thisType, basePath);
 						this.replaceText(
 							editor,
 							pastePlaceText,
@@ -352,6 +404,48 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 
+			new Setting(containerEl)
+			.setName("Upload video files")
+			.setDesc(
+				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.uploadVideo)
+					.onChange(async (value) => {
+						this.plugin.settings.uploadVideo = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+			new Setting(containerEl)
+			.setName("Upload audio files")
+			.setDesc(
+				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.uploadAudio)
+					.onChange(async (value) => {
+						this.plugin.settings.uploadAudio = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+			new Setting(containerEl)
+			.setName("Upload pdf files")
+			.setDesc(
+				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.uploadPdf)
+					.onChange(async (value) => {
+						this.plugin.settings.uploadPdf = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
 		new Setting(containerEl)
 			.setName("Copy to local folder")
 			.setDesc(
@@ -435,3 +529,20 @@ const wrapTextWithPasswordHide = (text: TextComponent) => {
 	return text;
 };
 
+const wrapFileDependingOnType = (location: string, type: string, localBase: string) => {
+	const srcPrefix = localBase ? 'file://'+localBase+'/' : '';
+
+	if (type === 'image') {
+		return `![image](${location})`
+	} else if(type === 'video') {
+		return `<video src="${srcPrefix}${location}" controls />`;
+	} else if(type === 'audio') {
+		return `<audio src="${srcPrefix}${location}" controls />`;
+	} else if(type === 'pdf') {
+		return `<iframe frameborder=0 border=0 width=100% height=800 
+		src="https://docs.google.com/viewer?url=${srcPrefix}${location}?raw=true">
+	</iframe>`
+	} else {
+		throw new Error('Unknown file type');
+	}
+};
