@@ -30,6 +30,7 @@ interface S3UploaderSettings {
 	localUpload: boolean;
 	localUploadFolder: string;
 	customEndpoint: string;
+	forcePathStyle: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -43,6 +44,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	localUpload: false,
 	localUploadFolder: "",
 	customEndpoint: "",
+	forcePathStyle: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -204,7 +206,9 @@ export default class S3UploaderPlugin extends Plugin {
 		let apiEndpoint = this.settings.customEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = apiEndpoint.replace("://", `://${this.settings.bucket}.`);
+		this.settings.imageUrlPath = this.settings.forcePathStyle
+			? apiEndpoint + this.settings.bucket + "/"
+			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 		this.s3 = new S3Client({
 			region: this.settings.region,
 			credentials: {
@@ -212,6 +216,7 @@ export default class S3UploaderPlugin extends Plugin {
 				secretAccessKey: this.settings.secretKey,
 			},
 			endpoint: apiEndpoint,
+			forcePathStyle: this.settings.forcePathStyle
 		});
 
 		this.pasteFunction = this.pasteHandler.bind(this);
@@ -388,6 +393,18 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("S3 Path Style URLs")
+			.setDesc("Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.forcePathStyle)
+					.onChange(async (value) => {
+						this.plugin.settings.forcePathStyle = value;
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }
 
