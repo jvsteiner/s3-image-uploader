@@ -191,8 +191,18 @@ export default class S3UploaderPlugin extends Plugin {
 					.then((res) => {
 						const url = this.settings.imageUrlPath + key;
 						// const imgMarkdownText = `![image](${url})`;
-						const imgMarkdownText = wrapFileDependingOnType(url, thisType, '');
 
+						let imgMarkdownText = '';
+						try {
+							imgMarkdownText = wrapFileDependingOnType(url, thisType, '');
+						} catch (error) {
+							this.replaceText(
+								editor,
+								pastePlaceText,
+								''
+							);
+							throw error;
+						}
 
 						this.replaceText(
 							editor,
@@ -228,7 +238,20 @@ export default class S3UploaderPlugin extends Plugin {
 						if (adapter instanceof FileSystemAdapter) {
     						basePath = adapter.getBasePath();
 						}
-						const imgMarkdownText = wrapFileDependingOnType(localUploadPath, thisType, basePath);
+
+						let imgMarkdownText = '';
+
+						try {
+							imgMarkdownText = wrapFileDependingOnType(localUploadPath, thisType, basePath);
+
+						} catch (error) {
+							this.replaceText(
+								editor,
+								pastePlaceText,
+								''
+							);
+							throw error;
+						}
 						this.replaceText(
 							editor,
 							pastePlaceText,
@@ -435,7 +458,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			new Setting(containerEl)
 			.setName("Upload pdf files")
 			.setDesc(
-				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note."
+				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -539,8 +562,11 @@ const wrapFileDependingOnType = (location: string, type: string, localBase: stri
 	} else if(type === 'audio') {
 		return `<audio src="${srcPrefix}${location}" controls />`;
 	} else if(type === 'pdf') {
+		if (localBase) {
+			throw new Error('PDFs cannot be embedded in local mode');
+		}
 		return `<iframe frameborder=0 border=0 width=100% height=800 
-		src="https://docs.google.com/viewer?url=${srcPrefix}${location}?raw=true">
+		src="https://docs.google.com/viewer?url=${location}?raw=true">
 	</iframe>`
 	} else {
 		throw new Error('Unknown file type');
