@@ -25,11 +25,11 @@ interface S3UploaderSettings {
 	region: string;
 	bucket: string;
 	folder: string;
-	apiEndpoint: string;
 	imageUrlPath: string;
 	uploadOnDrag: boolean;
 	localUpload: boolean;
 	localUploadFolder: string;
+	customEndpoint: string;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -38,11 +38,11 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	region: "",
 	bucket: "",
 	folder: "",
-	apiEndpoint: "",
 	imageUrlPath: "",
 	uploadOnDrag: true,
 	localUpload: false,
 	localUploadFolder: "",
+	customEndpoint: "",
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -201,15 +201,17 @@ export default class S3UploaderPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new S3UploaderSettingTab(this.app, this));
 
-		this.settings.apiEndpoint = `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = `https://${this.settings.bucket}.s3.${this.settings.region}.amazonaws.com/`;
+		let apiEndpoint = this.settings.customEndpoint
+			? this.settings.customEndpoint
+			: `https://s3.${this.settings.region}.amazonaws.com/`;
+		this.settings.imageUrlPath = apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 		this.s3 = new S3Client({
 			region: this.settings.region,
 			credentials: {
 				accessKeyId: this.settings.accessKey,
 				secretAccessKey: this.settings.secretKey,
 			},
-			endpoint: this.settings.apiEndpoint,
+			endpoint: apiEndpoint,
 		});
 
 		this.pasteFunction = this.pasteHandler.bind(this);
@@ -370,6 +372,19 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.localUploadFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.localUploadFolder = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Custom S3 Endpoint")
+			.setDesc("Optionally set a custom endpoint for any S3 compatible storage provider.")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://s3.myhost.com/")
+					.setValue(this.plugin.settings.customEndpoint)
+					.onChange(async (value) => {
+						this.plugin.settings.customEndpoint = value.trim();
 						await this.plugin.saveSettings();
 					})
 			);
