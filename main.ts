@@ -25,11 +25,12 @@ interface S3UploaderSettings {
 	region: string;
 	bucket: string;
 	folder: string;
-	apiEndpoint: string;
 	imageUrlPath: string;
 	uploadOnDrag: boolean;
 	localUpload: boolean;
 	localUploadFolder: string;
+	customEndpoint: string;
+	forcePathStyle: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -38,11 +39,12 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	region: "",
 	bucket: "",
 	folder: "",
-	apiEndpoint: "",
 	imageUrlPath: "",
 	uploadOnDrag: true,
 	localUpload: false,
 	localUploadFolder: "",
+	customEndpoint: "",
+	forcePathStyle: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -201,15 +203,20 @@ export default class S3UploaderPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new S3UploaderSettingTab(this.app, this));
 
-		this.settings.apiEndpoint = `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = `https://${this.settings.bucket}.s3.${this.settings.region}.amazonaws.com/`;
+		let apiEndpoint = this.settings.customEndpoint
+			? this.settings.customEndpoint
+			: `https://s3.${this.settings.region}.amazonaws.com/`;
+		this.settings.imageUrlPath = this.settings.forcePathStyle
+			? apiEndpoint + this.settings.bucket + "/"
+			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 		this.s3 = new S3Client({
 			region: this.settings.region,
 			credentials: {
 				accessKeyId: this.settings.accessKey,
 				secretAccessKey: this.settings.secretKey,
 			},
-			endpoint: this.settings.apiEndpoint,
+			endpoint: apiEndpoint,
+			forcePathStyle: this.settings.forcePathStyle
 		});
 
 		this.pasteFunction = this.pasteHandler.bind(this);
@@ -373,6 +380,35 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Custom S3 Endpoint")
+			.setDesc("Optionally set a custom endpoint for any S3 compatible storage provider.")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://s3.myhost.com/")
+					.setValue(this.plugin.settings.customEndpoint)
+					.onChange(async (value) => {
+						value = value.match(/https?:\/\//) // Force to start http(s):// 
+							? value
+							: "https://" + value; 
+						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
+						this.plugin.settings.customEndpoint = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("S3 Path Style URLs")
+			.setDesc("Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.forcePathStyle)
+					.onChange(async (value) => {
+						this.plugin.settings.forcePathStyle = value;
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }
 
