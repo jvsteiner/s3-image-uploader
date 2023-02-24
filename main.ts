@@ -389,6 +389,10 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.setPlaceholder("https://s3.myhost.com/")
 					.setValue(this.plugin.settings.customEndpoint)
 					.onChange(async (value) => {
+						value = value.match(/https?:\/\//) // Force to start http(s):// 
+							? value
+							: "https://" + value; 
+						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
 						this.plugin.settings.customEndpoint = value.trim();
 						await this.plugin.saveSettings();
 					})
