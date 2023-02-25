@@ -142,13 +142,10 @@ export default class S3UploaderPlugin extends Plugin {
 
 		if (file?.type.match(videoType) && uploadVideo) {
 			thisType = "video";
-			console.log("video");
 		} else if (file?.type.match(audioType) && uploadAudio) {
 			thisType = "audio";
-			console.log("audio");
 		} else if  (file?.type.match(pdfType) && uploadPdf) {
 			thisType = "pdf";
-			console.log("pdf");
 		} else if (file?.type.match(imageType)) {
 			thisType = "image";
 		}
@@ -190,7 +187,6 @@ export default class S3UploaderPlugin extends Plugin {
 					)
 					.then((res) => {
 						const url = this.settings.imageUrlPath + key;
-						// const imgMarkdownText = `![image](${url})`;
 
 						let imgMarkdownText = '';
 						try {
@@ -534,7 +530,6 @@ const wrapTextWithPasswordHide = (text: TextComponent) => {
 	if (!hider) {
 		return
 	}
-	// const hider = text.inputEl.createEl('span');
 	setIcon(hider as HTMLElement, 'eye-off');
 
 	hider.addEventListener("click", ()=> {
@@ -565,9 +560,9 @@ const wrapFileDependingOnType = (location: string, type: string, localBase: stri
 		if (localBase) {
 			throw new Error('PDFs cannot be embedded in local mode');
 		}
-		return `<iframe frameborder=0 border=0 width=100% height=800 
-		src="https://docs.google.com/viewer?url=${location}?raw=true">
-	</iframe>`
+		return `<iframe frameborder=0 border=0 width=100% height=800
+	src="https://docs.google.com/viewer?url=${location}?raw=true">
+</iframe>`
 	} else {
 		throw new Error('Unknown file type');
 	}
