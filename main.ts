@@ -30,6 +30,7 @@ interface S3UploaderSettings {
 	uploadOnDrag: boolean;
 	localUpload: boolean;
 	localUploadFolder: string;
+	useCustomEndpoint: boolean;
 	customEndpoint: string;
 	forcePathStyle: boolean;
 	uploadVideo: boolean;
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	uploadOnDrag: true,
 	localUpload: false,
 	localUploadFolder: "",
+	useCustomEndpoint: false,
 	customEndpoint: "",
 	forcePathStyle: false,
 	uploadVideo: false,
@@ -274,7 +276,7 @@ export default class S3UploaderPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new S3UploaderSettingTab(this.app, this));
 
-		let apiEndpoint = this.settings.customEndpoint
+		let apiEndpoint = this.settings.useCustomEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
 		this.settings.imageUrlPath = this.settings.forcePathStyle
@@ -423,7 +425,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 
-			new Setting(containerEl)
+		new Setting(containerEl)
 			.setName("Upload video files")
 			.setDesc(
 				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note."
@@ -437,7 +439,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 
-			new Setting(containerEl)
+		new Setting(containerEl)
 			.setName("Upload audio files")
 			.setDesc(
 				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note."
@@ -451,7 +453,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 
-			new Setting(containerEl)
+		new Setting(containerEl)
 			.setName("Upload pdf files")
 			.setDesc(
 				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files."
@@ -494,7 +496,21 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					})
 			);
 
-		new Setting(containerEl)
+			new Setting(containerEl)
+			.setName("Use custom endpoint")
+			.setDesc(
+				"Use the custom api endpoint below."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.useCustomEndpoint)
+					.onChange(async (value) => {
+						this.plugin.settings.useCustomEndpoint = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+			new Setting(containerEl)
 			.setName("Custom S3 Endpoint")
 			.setDesc("Optionally set a custom endpoint for any S3 compatible storage provider.")
 			.addText((text) =>
