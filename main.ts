@@ -8,8 +8,19 @@ import {
 	TextComponent,
 	EditorPosition,
 	setIcon,
-	FileSystemAdapter
+	FileSystemAdapter,
+	RequestUrlParam,
+	requestUrl
 } from "obsidian";
+import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
+import { HttpHandlerOptions } from "@aws-sdk/types";
+import { buildQueryString } from "@aws-sdk/querystring-builder";
+import { requestTimeout } from "@aws-sdk/fetch-http-handler/dist-es/request-timeout";
+
+import {
+	FetchHttpHandler,
+	FetchHttpHandlerOptions,
+} from "@aws-sdk/fetch-http-handler";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import * as crypto from "crypto";
@@ -36,6 +47,7 @@ interface S3UploaderSettings {
 	uploadVideo: boolean;
 	uploadAudio: boolean;
 	uploadPdf: boolean;
+	bypassCors: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -54,6 +66,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	uploadVideo: false,
 	uploadAudio: false,
 	uploadPdf: false,
+	bypassCors: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -183,7 +196,7 @@ export default class S3UploaderPlugin extends Plugin {
 						new PutObjectCommand({
 							Bucket: this.settings.bucket,
 							Key: key,
-							Body: file,
+							Body: new Uint8Array(await file.arrayBuffer()),
 							ContentType: contentType ? contentType : undefined,
 						})
 					)
@@ -234,7 +247,7 @@ export default class S3UploaderPlugin extends Plugin {
 						let basePath = '';
 						const adapter = this.app.vault.adapter;
 						if (adapter instanceof FileSystemAdapter) {
-    						basePath = adapter.getBasePath();
+							basePath = adapter.getBasePath();
 						}
 
 						let imgMarkdownText = '';
@@ -282,15 +295,29 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings.imageUrlPath = this.settings.forcePathStyle
 			? apiEndpoint + this.settings.bucket + "/"
 			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
-		this.s3 = new S3Client({
-			region: this.settings.region,
-			credentials: {
-				accessKeyId: this.settings.accessKey,
-				secretAccessKey: this.settings.secretKey,
-			},
-			endpoint: apiEndpoint,
-			forcePathStyle: this.settings.forcePathStyle
-		});
+			
+			if (this.settings.bypassCors) {
+				this.s3 = new S3Client({
+					region: this.settings.region,
+					credentials: {
+						accessKeyId: this.settings.accessKey,
+						secretAccessKey: this.settings.secretKey,
+					},
+					endpoint: apiEndpoint,
+					forcePathStyle: this.settings.forcePathStyle,
+					requestHandler: new ObsHttpHandler(),
+				});
+			} else {
+				this.s3 = new S3Client({
+					region: this.settings.region,
+					credentials: {
+						accessKeyId: this.settings.accessKey,
+						secretAccessKey: this.settings.secretKey,
+					},
+					endpoint: apiEndpoint,
+					forcePathStyle: this.settings.forcePathStyle
+				});
+		}
 
 		this.pasteFunction = this.pasteHandler.bind(this);
 
@@ -538,6 +565,19 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+		
+		new Setting(containerEl)
+			.setName("Bypass local CORS check")
+			.setDesc("Bypass local CORS preflight checks - it might work on later versions of Obsidian.")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.bypassCors)
+					.onChange(async (value) => {
+						this.plugin.settings.bypassCors = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
 	}
 }
 
@@ -583,3 +623,120 @@ const wrapFileDependingOnType = (location: string, type: string, localBase: stri
 		throw new Error('Unknown file type');
 	}
 };
+
+
+////////////////////////////////////////////////////////////////////////////////
+// special handler using Obsidian requestUrl
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * This is close to origin implementation of FetchHttpHandler
+ * https://github.com/aws/aws-sdk-js-v3/blob/main/packages/fetch-http-handler/src/fetch-http-handler.ts
+ * that is released under Apache 2 License.
+ * But this uses Obsidian requestUrl instead.
+ */
+class ObsHttpHandler extends FetchHttpHandler {
+	requestTimeoutInMs: number | undefined;
+	constructor(options?: FetchHttpHandlerOptions) {
+		super(options);
+		this.requestTimeoutInMs =
+			options === undefined ? undefined : options.requestTimeout;
+	}
+	async handle(
+		request: HttpRequest,
+		{ abortSignal }: HttpHandlerOptions = {}
+	): Promise<{ response: HttpResponse }> {
+		if (abortSignal?.aborted) {
+			const abortError = new Error("Request aborted");
+			abortError.name = "AbortError";
+			return Promise.reject(abortError);
+		}
+  
+		let path = request.path;
+		if (request.query) {
+			const queryString = buildQueryString(request.query);
+			if (queryString) {
+				path += `?${queryString}`;
+			}
+		}
+  
+		const { port, method } = request;
+		const url = `${request.protocol}//${request.hostname}${
+			port ? `:${port}` : ""
+		}${path}`;
+		const body =
+			method === "GET" || method === "HEAD" ? undefined : request.body;
+  
+		const transformedHeaders: Record<string, string> = {};
+		for (const key of Object.keys(request.headers)) {
+			const keyLower = key.toLowerCase();
+			if (keyLower === "host" || keyLower === "content-length") {
+				continue;
+			}
+			transformedHeaders[keyLower] = request.headers[key];
+		}
+  
+		let contentType: string | undefined = undefined;
+		if (transformedHeaders["content-type"] !== undefined) {
+			contentType = transformedHeaders["content-type"];
+		}
+  
+		let transformedBody: any = body;
+		if (ArrayBuffer.isView(body)) {
+			transformedBody = bufferToArrayBuffer(body);
+		}
+  
+		const param: RequestUrlParam = {
+			body: transformedBody,
+			headers: transformedHeaders,
+			method: method,
+			url: url,
+			contentType: contentType,
+		};
+  
+		const raceOfPromises = [
+			requestUrl(param).then((rsp) => {
+				const headers = rsp.headers;
+				const headersLower: Record<string, string> = {};
+				for (const key of Object.keys(headers)) {
+					headersLower[key.toLowerCase()] = headers[key];
+				}
+				const stream = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new Uint8Array(rsp.arrayBuffer));
+						controller.close();
+					},
+				});
+				return {
+					response: new HttpResponse({
+						headers: headersLower,
+						statusCode: rsp.status,
+						body: stream,
+					}),
+				};
+			}),
+			requestTimeout(this.requestTimeoutInMs),
+		];
+  
+		if (abortSignal) {
+			raceOfPromises.push(
+				new Promise<never>((resolve, reject) => {
+					abortSignal.onabort = () => {
+						const abortError = new Error("Request aborted");
+						abortError.name = "AbortError";
+					reject(abortError);
+				};
+			})
+			);
+		}
+		return Promise.race(raceOfPromises);
+	}
+  }
+
+
+const bufferToArrayBuffer = (
+		b: Buffer | Uint8Array | ArrayBufferView
+	) => {
+		return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+	};
+  
