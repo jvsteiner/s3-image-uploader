@@ -44,6 +44,7 @@ interface S3UploaderSettings {
 	useCustomEndpoint: boolean;
 	customEndpoint: string;
 	forcePathStyle: boolean;
+	customImageUrl: string;
 	uploadVideo: boolean;
 	uploadAudio: boolean;
 	uploadPdf: boolean;
@@ -63,6 +64,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	useCustomEndpoint: false,
 	customEndpoint: "",
 	forcePathStyle: false,
+	customImageUrl: "",
 	uploadVideo: false,
 	uploadAudio: false,
 	uploadPdf: false,
@@ -292,7 +294,9 @@ export default class S3UploaderPlugin extends Plugin {
 		let apiEndpoint = this.settings.useCustomEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = this.settings.forcePathStyle
+		this.settings.imageUrlPath = this.settings.customImageUrl.length > 0
+			? this.settings.customImageUrl
+			: this.settings.forcePathStyle
 			? apiEndpoint + this.settings.bucket + "/"
 			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 			
@@ -565,6 +569,22 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+		
+		new Setting(containerEl)
+			.setName("Custom Image URL")
+			.setDesc("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN. Leave it blank to use the default S3 URLs.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.customImageUrl)
+					.onChange(async (value) => {
+						value = value.match(/https?:\/\//) // Force to start http(s):// 
+							? value
+							: "https://" + value; 
+						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
+						this.plugin.settings.customImageUrl= value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
 		
 		new Setting(containerEl)
 			.setName("Bypass local CORS check")
