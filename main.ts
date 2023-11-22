@@ -186,9 +186,19 @@ export default class S3UploaderPlugin extends Plugin {
 			editor.replaceSelection(pastePlaceText);
 
 			// upload the image
-			const folder = fmUploadFolder
+			let folder = fmUploadFolder
 				? fmUploadFolder
 				: this.settings.folder;
+
+			const currentDate = new Date();
+			const year = currentDate.getFullYear();
+			const month = currentDate.getMonth() + 1; // JavaScript months are 0-11
+			const day = currentDate.getDate();
+
+			folder = folder.replace("${year}", year);
+			folder = folder.replace("${month}", month);
+			folder = folder.replace("${day}", day);
+
 			const key = folder ? folder + "/" + newFileName : newFileName;
 
 			if (!localUpload) {
@@ -431,7 +441,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Bucket folder")
-			.setDesc("Optional folder in s3 bucket.")
+			.setDesc("Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables.")
 			.addText((text) =>
 				text
 					.setPlaceholder("folder")
