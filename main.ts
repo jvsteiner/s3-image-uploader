@@ -44,6 +44,7 @@ interface S3UploaderSettings {
 	useCustomEndpoint: boolean;
 	customEndpoint: string;
 	forcePathStyle: boolean;
+	useCustomImageUrl: boolean;
 	customImageUrl: string;
 	uploadVideo: boolean;
 	uploadAudio: boolean;
@@ -64,6 +65,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	useCustomEndpoint: false,
 	customEndpoint: "",
 	forcePathStyle: false,
+	useCustomImageUrl: false,
 	customImageUrl: "",
 	uploadVideo: false,
 	uploadAudio: false,
@@ -304,7 +306,7 @@ export default class S3UploaderPlugin extends Plugin {
 		let apiEndpoint = this.settings.useCustomEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = this.settings.customImageUrl.length > 0
+		this.settings.imageUrlPath = this.settings.useCustomImageUrl
 			? this.settings.customImageUrl
 			: this.settings.forcePathStyle
 			? apiEndpoint + this.settings.bucket + "/"
@@ -579,10 +581,24 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
-		
+
+		new Setting(containerEl)
+			.setName("Use custom image URL")
+			.setDesc(
+				"Use the custom image URL below."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.useCustomImageUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.useCustomImageUrl= value;
+						await this.plugin.saveSettings();
+					});
+			});
+
 		new Setting(containerEl)
 			.setName("Custom Image URL")
-			.setDesc("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN. Leave it blank to use the default S3 URLs.")
+			.setDesc("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.")
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.customImageUrl)
@@ -595,7 +611,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-		
+
 		new Setting(containerEl)
 			.setName("Bypass local CORS check")
 			.setDesc("Bypass local CORS preflight checks - it might work on later versions of Obsidian.")
