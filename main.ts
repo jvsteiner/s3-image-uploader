@@ -44,6 +44,8 @@ interface S3UploaderSettings {
 	useCustomEndpoint: boolean;
 	customEndpoint: string;
 	forcePathStyle: boolean;
+	useCustomImageUrl: boolean;
+	customImageUrl: string;
 	uploadVideo: boolean;
 	uploadAudio: boolean;
 	uploadPdf: boolean;
@@ -63,6 +65,8 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	useCustomEndpoint: false,
 	customEndpoint: "",
 	forcePathStyle: false,
+	useCustomImageUrl: false,
+	customImageUrl: "",
 	uploadVideo: false,
 	uploadAudio: false,
 	uploadPdf: false,
@@ -184,9 +188,19 @@ export default class S3UploaderPlugin extends Plugin {
 			editor.replaceSelection(pastePlaceText);
 
 			// upload the image
-			const folder = fmUploadFolder
+			let folder = fmUploadFolder
 				? fmUploadFolder
 				: this.settings.folder;
+
+			const currentDate = new Date();
+			const year = currentDate.getFullYear();
+			const month = currentDate.getMonth() + 1; // JavaScript months are 0-11
+			const day = currentDate.getDate();
+
+			folder = folder.replace("${year}", year);
+			folder = folder.replace("${month}", month);
+			folder = folder.replace("${day}", day);
+
 			const key = folder ? folder + "/" + newFileName : newFileName;
 
 			if (!localUpload) {
@@ -292,7 +306,9 @@ export default class S3UploaderPlugin extends Plugin {
 		let apiEndpoint = this.settings.useCustomEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
-		this.settings.imageUrlPath = this.settings.forcePathStyle
+		this.settings.imageUrlPath = this.settings.useCustomImageUrl
+			? this.settings.customImageUrl
+			: this.settings.forcePathStyle
 			? apiEndpoint + this.settings.bucket + "/"
 			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 			
@@ -427,7 +443,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Bucket folder")
-			.setDesc("Optional folder in s3 bucket.")
+			.setDesc("Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables.")
 			.addText((text) =>
 				text
 					.setPlaceholder("folder")
@@ -565,7 +581,37 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
-		
+
+		new Setting(containerEl)
+			.setName("Use custom image URL")
+			.setDesc(
+				"Use the custom image URL below."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.useCustomImageUrl)
+					.onChange(async (value) => {
+						this.plugin.settings.useCustomImageUrl = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Custom Image URL")
+			.setDesc("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.")
+			.addText((text) =>
+				text
+					.setValue(this.plugin.settings.customImageUrl)
+					.onChange(async (value) => {
+						value = value.match(/https?:\/\//) // Force to start http(s):// 
+							? value
+							: "https://" + value; 
+						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
+						this.plugin.settings.customImageUrl = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
 		new Setting(containerEl)
 			.setName("Bypass local CORS check")
 			.setDesc("Bypass local CORS preflight checks - it might work on later versions of Obsidian.")
