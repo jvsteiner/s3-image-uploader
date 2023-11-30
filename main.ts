@@ -17,10 +17,7 @@ import { HttpHandlerOptions } from "@aws-sdk/types";
 import { buildQueryString } from "@aws-sdk/querystring-builder";
 import { requestTimeout } from "@aws-sdk/fetch-http-handler/dist-es/request-timeout";
 
-import {
-	FetchHttpHandler,
-	FetchHttpHandlerOptions,
-} from "@aws-sdk/fetch-http-handler";
+import { FetchHttpHandler } from "@smithy/fetch-http-handler";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import * as crypto from "crypto";
@@ -305,7 +302,7 @@ export default class S3UploaderPlugin extends Plugin {
 					},
 					endpoint: apiEndpoint,
 					forcePathStyle: this.settings.forcePathStyle,
-					requestHandler: new ObsHttpHandler(),
+					requestHandler: new ObsHttpHandler({ keepAlive: false}),
 				});
 			} else {
 				this.s3 = new S3Client({
@@ -315,7 +312,8 @@ export default class S3UploaderPlugin extends Plugin {
 						secretAccessKey: this.settings.secretKey,
 					},
 					endpoint: apiEndpoint,
-					forcePathStyle: this.settings.forcePathStyle
+					forcePathStyle: this.settings.forcePathStyle,
+					requestHandler: new ObsHttpHandler({ keepAlive: false}),
 				});
 		}
 
