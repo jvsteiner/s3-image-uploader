@@ -10,14 +10,17 @@ import {
 	setIcon,
 	FileSystemAdapter,
 	RequestUrlParam,
-	requestUrl
+	requestUrl,
 } from "obsidian";
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
 import { buildQueryString } from "@aws-sdk/querystring-builder";
 import { requestTimeout } from "@aws-sdk/fetch-http-handler/dist-es/request-timeout";
 
-import { FetchHttpHandler } from "@smithy/fetch-http-handler";
+import {
+	FetchHttpHandler,
+	FetchHttpHandlerOptions,
+} from "@smithy/fetch-http-handler";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import * as crypto from "crypto";
@@ -118,7 +121,6 @@ export default class S3UploaderPlugin extends Plugin {
 		const fmUploadAudio = fm && fm.uploadAudio;
 		const fmUploadPdf = fm && fm.uploadPdf;
 
-
 		const localUpload = fmLocalUpload
 			? fmLocalUpload
 			: this.settings.localUpload;
@@ -131,10 +133,8 @@ export default class S3UploaderPlugin extends Plugin {
 			? fmUploadAudio
 			: this.settings.uploadAudio;
 
-		const uploadPdf = fmUploadPdf
-			? fmUploadPdf
-			: this.settings.uploadPdf;
-		
+		const uploadPdf = fmUploadPdf ? fmUploadPdf : this.settings.uploadPdf;
+
 		let file = null;
 
 		// figure out what kind of event we're handling
@@ -160,12 +160,11 @@ export default class S3UploaderPlugin extends Plugin {
 			thisType = "video";
 		} else if (file?.type.match(audioType) && uploadAudio) {
 			thisType = "audio";
-		} else if  (file?.type.match(pdfType) && uploadPdf) {
+		} else if (file?.type.match(pdfType) && uploadPdf) {
 			thisType = "pdf";
 		} else if (file?.type.match(imageType)) {
 			thisType = "image";
 		}
-
 
 		if (thisType && file) {
 			ev.preventDefault();
@@ -185,9 +184,7 @@ export default class S3UploaderPlugin extends Plugin {
 			editor.replaceSelection(pastePlaceText);
 
 			// upload the image
-			let folder = fmUploadFolder
-				? fmUploadFolder
-				: this.settings.folder;
+			let folder = fmUploadFolder ? fmUploadFolder : this.settings.folder;
 
 			const currentDate = new Date();
 			const year = currentDate.getFullYear();
@@ -214,15 +211,15 @@ export default class S3UploaderPlugin extends Plugin {
 					.then((res) => {
 						const url = this.settings.imageUrlPath + key;
 
-						let imgMarkdownText = '';
+						let imgMarkdownText = "";
 						try {
-							imgMarkdownText = wrapFileDependingOnType(url, thisType, '');
-						} catch (error) {
-							this.replaceText(
-								editor,
-								pastePlaceText,
-								''
+							imgMarkdownText = wrapFileDependingOnType(
+								url,
+								thisType,
+								""
 							);
+						} catch (error) {
+							this.replaceText(editor, pastePlaceText, "");
 							throw error;
 						}
 
@@ -254,24 +251,22 @@ export default class S3UploaderPlugin extends Plugin {
 				this.app.vault.adapter
 					.writeBinary(localUploadPath, buf)
 					.then(() => {
-
-						let basePath = '';
+						let basePath = "";
 						const adapter = this.app.vault.adapter;
 						if (adapter instanceof FileSystemAdapter) {
 							basePath = adapter.getBasePath();
 						}
 
-						let imgMarkdownText = '';
+						let imgMarkdownText = "";
 
 						try {
-							imgMarkdownText = wrapFileDependingOnType(localUploadPath, thisType, basePath);
-
-						} catch (error) {
-							this.replaceText(
-								editor,
-								pastePlaceText,
-								''
+							imgMarkdownText = wrapFileDependingOnType(
+								localUploadPath,
+								thisType,
+								basePath
 							);
+						} catch (error) {
+							this.replaceText(editor, pastePlaceText, "");
 							throw error;
 						}
 						this.replaceText(
@@ -308,29 +303,29 @@ export default class S3UploaderPlugin extends Plugin {
 			: this.settings.forcePathStyle
 			? apiEndpoint + this.settings.bucket + "/"
 			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
-			
-			if (this.settings.bypassCors) {
-				this.s3 = new S3Client({
-					region: this.settings.region,
-					credentials: {
-						accessKeyId: this.settings.accessKey,
-						secretAccessKey: this.settings.secretKey,
-					},
-					endpoint: apiEndpoint,
-					forcePathStyle: this.settings.forcePathStyle,
-					requestHandler: new ObsHttpHandler({ keepAlive: false}),
-				});
-			} else {
-				this.s3 = new S3Client({
-					region: this.settings.region,
-					credentials: {
-						accessKeyId: this.settings.accessKey,
-						secretAccessKey: this.settings.secretKey,
-					},
-					endpoint: apiEndpoint,
-					forcePathStyle: this.settings.forcePathStyle,
-					requestHandler: new ObsHttpHandler({ keepAlive: false}),
-				});
+
+		if (this.settings.bypassCors) {
+			this.s3 = new S3Client({
+				region: this.settings.region,
+				credentials: {
+					accessKeyId: this.settings.accessKey,
+					secretAccessKey: this.settings.secretKey,
+				},
+				endpoint: apiEndpoint,
+				forcePathStyle: this.settings.forcePathStyle,
+				requestHandler: new ObsHttpHandler({ keepAlive: false }),
+			});
+		} else {
+			this.s3 = new S3Client({
+				region: this.settings.region,
+				credentials: {
+					accessKeyId: this.settings.accessKey,
+					secretAccessKey: this.settings.secretKey,
+				},
+				endpoint: apiEndpoint,
+				forcePathStyle: this.settings.forcePathStyle,
+				requestHandler: new ObsHttpHandler({ keepAlive: false }),
+			});
 		}
 
 		this.pasteFunction = this.pasteHandler.bind(this);
@@ -441,7 +436,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Bucket folder")
-			.setDesc("Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables.")
+			.setDesc(
+				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables."
+			)
 			.addText((text) =>
 				text
 					.setPlaceholder("folder")
@@ -537,11 +534,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					})
 			);
 
-			new Setting(containerEl)
+		new Setting(containerEl)
 			.setName("Use custom endpoint")
-			.setDesc(
-				"Use the custom api endpoint below."
-			)
+			.setDesc("Use the custom api endpoint below.")
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomEndpoint)
@@ -551,18 +546,20 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 
-			new Setting(containerEl)
+		new Setting(containerEl)
 			.setName("Custom S3 Endpoint")
-			.setDesc("Optionally set a custom endpoint for any S3 compatible storage provider.")
+			.setDesc(
+				"Optionally set a custom endpoint for any S3 compatible storage provider."
+			)
 			.addText((text) =>
 				text
 					.setPlaceholder("https://s3.myhost.com/")
 					.setValue(this.plugin.settings.customEndpoint)
 					.onChange(async (value) => {
-						value = value.match(/https?:\/\//) // Force to start http(s):// 
+						value = value.match(/https?:\/\//) // Force to start http(s)://
 							? value
-							: "https://" + value; 
-						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
+							: "https://" + value;
+						value = value.replace(/([^\/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customEndpoint = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -570,7 +567,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("S3 Path Style URLs")
-			.setDesc("Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).")
+			.setDesc(
+				"Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com)."
+			)
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.forcePathStyle)
@@ -582,9 +581,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Use custom image URL")
-			.setDesc(
-				"Use the custom image URL below."
-			)
+			.setDesc("Use the custom image URL below.")
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomImageUrl)
@@ -596,15 +593,17 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Custom Image URL")
-			.setDesc("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.")
+			.setDesc(
+				"Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN."
+			)
 			.addText((text) =>
 				text
 					.setValue(this.plugin.settings.customImageUrl)
 					.onChange(async (value) => {
-						value = value.match(/https?:\/\//) // Force to start http(s):// 
+						value = value.match(/https?:\/\//) // Force to start http(s)://
 							? value
-							: "https://" + value; 
-						value = value.replace(/([^\/])$/, '$1/'); // Force to end with slash
+							: "https://" + value;
+						value = value.replace(/([^\/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customImageUrl = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -612,7 +611,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Bypass local CORS check")
-			.setDesc("Bypass local CORS preflight checks - it might work on later versions of Obsidian.")
+			.setDesc(
+				"Bypass local CORS preflight checks - it might work on later versions of Obsidian."
+			)
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.bypassCors)
@@ -621,53 +622,58 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
-
 	}
 }
 
 const wrapTextWithPasswordHide = (text: TextComponent) => {
-	const hider = text.inputEl.insertAdjacentElement("beforebegin", createSpan());
+	const hider = text.inputEl.insertAdjacentElement(
+		"beforebegin",
+		createSpan()
+	);
 	if (!hider) {
-		return
+		return;
 	}
-	setIcon(hider as HTMLElement, 'eye-off');
+	setIcon(hider as HTMLElement, "eye-off");
 
-	hider.addEventListener("click", ()=> {
+	hider.addEventListener("click", () => {
 		const isText = text.inputEl.getAttribute("type") === "text";
-		if(isText) {
-			setIcon(hider as HTMLElement, 'eye-off');
+		if (isText) {
+			setIcon(hider as HTMLElement, "eye-off");
 			text.inputEl.setAttribute("type", "password");
-		}else {
-			setIcon(hider as HTMLElement, 'eye')
+		} else {
+			setIcon(hider as HTMLElement, "eye");
 			text.inputEl.setAttribute("type", "text");
-		};
+		}
 		text.inputEl.focus();
 	});
 	text.inputEl.setAttribute("type", "password");
 	return text;
 };
 
-const wrapFileDependingOnType = (location: string, type: string, localBase: string) => {
-	const srcPrefix = localBase ? 'file://'+localBase+'/' : '';
+const wrapFileDependingOnType = (
+	location: string,
+	type: string,
+	localBase: string
+) => {
+	const srcPrefix = localBase ? "file://" + localBase + "/" : "";
 
-	if (type === 'image') {
-		return `![image](${location})`
-	} else if(type === 'video') {
+	if (type === "image") {
+		return `![image](${location})`;
+	} else if (type === "video") {
 		return `<video src="${srcPrefix}${location}" controls />`;
-	} else if(type === 'audio') {
+	} else if (type === "audio") {
 		return `<audio src="${srcPrefix}${location}" controls />`;
-	} else if(type === 'pdf') {
+	} else if (type === "pdf") {
 		if (localBase) {
-			throw new Error('PDFs cannot be embedded in local mode');
+			throw new Error("PDFs cannot be embedded in local mode");
 		}
 		return `<iframe frameborder=0 border=0 width=100% height=800
 	src="https://docs.google.com/viewer?url=${location}?raw=true">
-</iframe>`
+</iframe>`;
 	} else {
-		throw new Error('Unknown file type');
+		throw new Error("Unknown file type");
 	}
 };
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // special handler using Obsidian requestUrl
@@ -695,7 +701,7 @@ class ObsHttpHandler extends FetchHttpHandler {
 			abortError.name = "AbortError";
 			return Promise.reject(abortError);
 		}
-  
+
 		let path = request.path;
 		if (request.query) {
 			const queryString = buildQueryString(request.query);
@@ -703,14 +709,14 @@ class ObsHttpHandler extends FetchHttpHandler {
 				path += `?${queryString}`;
 			}
 		}
-  
+
 		const { port, method } = request;
 		const url = `${request.protocol}//${request.hostname}${
 			port ? `:${port}` : ""
 		}${path}`;
 		const body =
 			method === "GET" || method === "HEAD" ? undefined : request.body;
-  
+
 		const transformedHeaders: Record<string, string> = {};
 		for (const key of Object.keys(request.headers)) {
 			const keyLower = key.toLowerCase();
@@ -719,17 +725,17 @@ class ObsHttpHandler extends FetchHttpHandler {
 			}
 			transformedHeaders[keyLower] = request.headers[key];
 		}
-  
+
 		let contentType: string | undefined = undefined;
 		if (transformedHeaders["content-type"] !== undefined) {
 			contentType = transformedHeaders["content-type"];
 		}
-  
+
 		let transformedBody: any = body;
 		if (ArrayBuffer.isView(body)) {
 			transformedBody = bufferToArrayBuffer(body);
 		}
-  
+
 		const param: RequestUrlParam = {
 			body: transformedBody,
 			headers: transformedHeaders,
@@ -737,7 +743,7 @@ class ObsHttpHandler extends FetchHttpHandler {
 			url: url,
 			contentType: contentType,
 		};
-  
+
 		const raceOfPromises = [
 			requestUrl(param).then((rsp) => {
 				const headers = rsp.headers;
@@ -761,26 +767,22 @@ class ObsHttpHandler extends FetchHttpHandler {
 			}),
 			requestTimeout(this.requestTimeoutInMs),
 		];
-  
+
 		if (abortSignal) {
 			raceOfPromises.push(
 				new Promise<never>((resolve, reject) => {
 					abortSignal.onabort = () => {
 						const abortError = new Error("Request aborted");
 						abortError.name = "AbortError";
-					reject(abortError);
-				};
-			})
+						reject(abortError);
+					};
+				})
 			);
 		}
 		return Promise.race(raceOfPromises);
 	}
-  }
+}
 
-
-const bufferToArrayBuffer = (
-		b: Buffer | Uint8Array | ArrayBufferView
-	) => {
-		return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-	};
-  
+const bufferToArrayBuffer = (b: Buffer | Uint8Array | ArrayBufferView) => {
+	return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+};
