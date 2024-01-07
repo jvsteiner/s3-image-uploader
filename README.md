@@ -87,8 +87,8 @@ PR's are welcome, features that I would like to add include:
 -   [x] Add support for s3 compatible storage
 -   [x] Add support for video, audio, and pdf upload and embedding.
 
-
 ### Releasing new releases
+
 Update your manifest.json with your new version number, such as 1.0.1, and the minimum Obsidian version required for your latest release.
 
 Update your versions.json file with "new-plugin-version": "minimum-obsidian-version" so older versions of Obsidian can download an older version of your plugin that's compatible.
