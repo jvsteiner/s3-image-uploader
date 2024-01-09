@@ -670,7 +670,7 @@ const wrapFileDependingOnType = (
 			throw new Error("PDFs cannot be embedded in local mode");
 		}
 		return `<iframe frameborder=0 border=0 width=100% height=800
-	src="https://docs.google.com/viewer?url=${location}?raw=true">
+	src="https://docs.google.com/viewer?embedded=true&url=${location}?raw=true">
 </iframe>`;
 	} else {
 		throw new Error("Unknown file type");
