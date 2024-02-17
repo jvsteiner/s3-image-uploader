@@ -15,7 +15,7 @@ import {
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
 import { buildQueryString } from "@aws-sdk/querystring-builder";
-import { requestTimeout } from "@aws-sdk/fetch-http-handler/dist-es/request-timeout";
+import { requestTimeout } from "@smithy/fetch-http-handler/dist-es/request-timeout";
 
 import {
 	FetchHttpHandler,
