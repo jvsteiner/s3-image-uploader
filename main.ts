@@ -109,183 +109,110 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 
 		const noteFile = this.app.workspace.getActiveFile();
-
 		if (!noteFile || !noteFile.name) return;
 
-		// Handle frontmatter settings
 		const fm = this.app.metadataCache.getFileCache(noteFile)?.frontmatter;
-		const fmUploadOnDrag = fm && fm.uploadOnDrag;
-		const fmLocalUpload = fm && fm.localUpload;
-		const fmUploadFolder = fm ? fm.localUploadFolder : null;
-		const fmUploadVideo = fm && fm.uploadVideo;
-		const fmUploadAudio = fm && fm.uploadAudio;
-		const fmUploadPdf = fm && fm.uploadPdf;
+		const localUpload = fm?.localUpload ?? this.settings.localUpload;
+		const uploadVideo = fm?.uploadVideo ?? this.settings.uploadVideo;
+		const uploadAudio = fm?.uploadAudio ?? this.settings.uploadAudio;
+		const uploadPdf = fm?.uploadPdf ?? this.settings.uploadPdf;
 
-		const localUpload = fmLocalUpload
-			? fmLocalUpload
-			: this.settings.localUpload;
-
-		const uploadVideo = fmUploadVideo
-			? fmUploadVideo
-			: this.settings.uploadVideo;
-
-		const uploadAudio = fmUploadAudio
-			? fmUploadAudio
-			: this.settings.uploadAudio;
-
-		const uploadPdf = fmUploadPdf ? fmUploadPdf : this.settings.uploadPdf;
-
-		let file = null;
-
-		// figure out what kind of event we're handling
+		let files: File[] = [];
 		switch (ev.type) {
 			case "paste":
-				file = (ev as ClipboardEvent).clipboardData?.files[0];
+				files = Array.from(
+					(ev as ClipboardEvent).clipboardData?.files || []
+				);
 				break;
 			case "drop":
-				if (!this.settings.uploadOnDrag && !fmUploadOnDrag) {
+				if (!this.settings.uploadOnDrag && !(fm && fm.uploadOnDrag)) {
 					return;
 				}
-				file = (ev as DragEvent).dataTransfer?.files[0];
+				files = Array.from((ev as DragEvent).dataTransfer?.files || []);
+				break;
 		}
 
-		const imageType = /image.*/;
-		const videoType = /video.*/;
-		const audioType = /audio.*/;
-		const pdfType = /application\/pdf/;
-
-		let thisType = "";
-
-		if (file?.type.match(videoType) && uploadVideo) {
-			thisType = "video";
-		} else if (file?.type.match(audioType) && uploadAudio) {
-			thisType = "audio";
-		} else if (file?.type.match(pdfType) && uploadPdf) {
-			thisType = "pdf";
-		} else if (file?.type.match(imageType)) {
-			thisType = "image";
-		}
-
-		if (thisType && file) {
+		if (files.length > 0) {
 			ev.preventDefault();
 
-			// set the placeholder text
-			const buf = await file.arrayBuffer();
-			const digest = crypto
-				.createHash("md5")
-				.update(new Uint8Array(buf))
-				.digest("hex");
-			const contentType = file?.type;
-			const newFileName =
-				digest +
-				"." +
-				file.name.slice(((file?.name.lastIndexOf(".") - 1) >>> 0) + 2);
-			const pastePlaceText = `![uploading...](${newFileName})\n`;
-			editor.replaceSelection(pastePlaceText);
+			const uploads = files.map(async (file) => {
+				let thisType = "";
+				if (file.type.match(/video.*/) && uploadVideo) {
+					thisType = "video";
+				} else if (file.type.match(/audio.*/) && uploadAudio) {
+					thisType = "audio";
+				} else if (file.type.match(/application\/pdf/) && uploadPdf) {
+					thisType = "pdf";
+				} else if (file.type.match(/image.*/)) {
+					thisType = "image";
+				}
 
-			// upload the image
-			let folder = fmUploadFolder ? fmUploadFolder : this.settings.folder;
+				if (!thisType) return;
 
-			const currentDate = new Date();
-			const year = currentDate.getFullYear();
-			const month = currentDate.getMonth() + 1; // JavaScript months are 0-11
-			const day = currentDate.getDate();
+				const buf = await file.arrayBuffer();
+				const digest = crypto
+					.createHash("md5")
+					.update(new Uint8Array(buf))
+					.digest("hex");
+				const newFileName = `${digest}.${file.name.split(".").pop()}`;
+				const placeholder = `![uploading...](${newFileName})\n`;
+				editor.replaceSelection(placeholder);
 
-			folder = folder.replace("${year}", year);
-			folder = folder.replace("${month}", month);
-			folder = folder.replace("${day}", day);
-
-			const key = folder ? folder + "/" + newFileName : newFileName;
-
-			if (!localUpload) {
-				// Use S3
-				this.s3
-					.send(
-						new PutObjectCommand({
-							Bucket: this.settings.bucket,
-							Key: key,
-							Body: new Uint8Array(await file.arrayBuffer()),
-							ContentType: contentType ? contentType : undefined,
-						})
+				let folder = fm?.folder ?? this.settings.folder;
+				const currentDate = new Date();
+				folder = folder
+					.replace("${year}", currentDate.getFullYear().toString())
+					.replace(
+						"${month}",
+						String(currentDate.getMonth() + 1).padStart(2, "0")
 					)
-					.then((res) => {
-						const url = this.settings.imageUrlPath + key;
+					.replace(
+						"${day}",
+						String(currentDate.getDate()).padStart(2, "0")
+					);
+				const key = folder ? `${folder}/${newFileName}` : newFileName;
 
-						let imgMarkdownText = "";
-						try {
-							imgMarkdownText = wrapFileDependingOnType(
-								url,
-								thisType,
-								""
-							);
-						} catch (error) {
-							this.replaceText(editor, pastePlaceText, "");
-							throw error;
-						}
+				try {
+					let url;
+					if (!localUpload) {
+						await this.s3.send(
+							new PutObjectCommand({
+								Bucket: this.settings.bucket,
+								Key: key,
+								Body: new Uint8Array(buf),
+								ContentType: file.type,
+							})
+						);
+						url = this.settings.imageUrlPath + key;
+					} else {
+						await this.app.vault.adapter.writeBinary(
+							key,
+							new Uint8Array(buf)
+						);
+						url =
+							this.app.vault.adapter instanceof FileSystemAdapter
+								? this.app.vault.adapter.getFullPath(key)
+								: key;
+					}
+					const imgMarkdownText = wrapFileDependingOnType(
+						url,
+						thisType,
+						""
+					);
+					this.replaceText(editor, placeholder, imgMarkdownText);
+				} catch (error) {
+					console.error(error);
+					this.replaceText(
+						editor,
+						placeholder,
+						`Error uploading file: ${error.message}\n`
+					);
+				}
+			});
 
-						this.replaceText(
-							editor,
-							pastePlaceText,
-							imgMarkdownText
-						);
-						new Notice(
-							`Image uploaded to S3 bucket: ${this.settings.bucket}`
-						);
-					})
-					.catch((err) => {
-						console.error(err);
-						new Notice(
-							`Error uploading image to S3 bucket ${this.settings.bucket}: ` +
-								err.message
-						);
-					});
-			} else {
-				// Use local upload
-				const localUploadFolder = fmUploadFolder
-					? fmUploadFolder
-					: this.settings.localUploadFolder;
-				const localUploadPath = localUploadFolder
-					? localUploadFolder + "/" + newFileName
-					: newFileName;
-				await this.app.vault.adapter.mkdir(localUploadFolder);
-				this.app.vault.adapter
-					.writeBinary(localUploadPath, buf)
-					.then(() => {
-						let basePath = "";
-						const adapter = this.app.vault.adapter;
-						if (adapter instanceof FileSystemAdapter) {
-							basePath = adapter.getBasePath();
-						}
-
-						let imgMarkdownText = "";
-
-						try {
-							imgMarkdownText = wrapFileDependingOnType(
-								localUploadPath,
-								thisType,
-								basePath
-							);
-						} catch (error) {
-							this.replaceText(editor, pastePlaceText, "");
-							throw error;
-						}
-						this.replaceText(
-							editor,
-							pastePlaceText,
-							imgMarkdownText
-						);
-						new Notice(
-							`Image uploaded to ${localUploadFolder} folder`
-						);
-					})
-					.catch((err) => {
-						console.log(err);
-						new Notice(
-							`Error uploading image to ${localUploadFolder} folder: ` +
-								err.message
-						);
-					});
-			}
+			await Promise.all(uploads).then(() => {
+				new Notice("All files processed.");
+			});
 		}
 	}
 
@@ -308,7 +235,7 @@ export default class S3UploaderPlugin extends Plugin {
 			this.s3 = new S3Client({
 				region: this.settings.region,
 				credentials: {
-					clientConfig: {region: this.settings.region},
+					clientConfig: { region: this.settings.region },
 					accessKeyId: this.settings.accessKey,
 					secretAccessKey: this.settings.secretKey,
 				},
@@ -320,7 +247,7 @@ export default class S3UploaderPlugin extends Plugin {
 			this.s3 = new S3Client({
 				region: this.settings.region,
 				credentials: {
-					clientConfig: {region: this.settings.region},
+					clientConfig: { region: this.settings.region },
 					accessKeyId: this.settings.accessKey,
 					secretAccessKey: this.settings.secretKey,
 				},
