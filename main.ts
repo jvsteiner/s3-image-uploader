@@ -235,7 +235,7 @@ export default class S3UploaderPlugin extends Plugin {
 			this.s3 = new S3Client({
 				region: this.settings.region,
 				credentials: {
-					clientConfig: { region: this.settings.region },
+					// clientConfig: { region: this.settings.region },
 					accessKeyId: this.settings.accessKey,
 					secretAccessKey: this.settings.secretKey,
 				},
@@ -247,7 +247,7 @@ export default class S3UploaderPlugin extends Plugin {
 			this.s3 = new S3Client({
 				region: this.settings.region,
 				credentials: {
-					clientConfig: { region: this.settings.region },
+					// clientConfig: { region: this.settings.region },
 					accessKeyId: this.settings.accessKey,
 					secretAccessKey: this.settings.secretKey,
 				},
