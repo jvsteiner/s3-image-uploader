@@ -1,1 +1,1 @@
-declare module '@aws-sdk/fetch-http-handler/dist-es/request-timeout';
+declare module '@smithy/fetch-http-handler/dist-es/request-timeout';
