@@ -145,8 +145,9 @@ export default class S3UploaderPlugin extends Plugin {
 					thisType = "pdf";
 				} else if (file.type.match(/image.*/)) {
 					thisType = "image";
-				}
-
+		        } else if (file.type.match(/presentation.*/) || file.type.match(/powerpoint.*/)) {
+		          thisType = "ppt";
+		        }
 				if (!thisType) return;
 
 				const buf = await file.arrayBuffer();
@@ -586,22 +587,27 @@ const wrapFileDependingOnType = (
 ) => {
 	const srcPrefix = localBase ? "file://" + localBase + "/" : "";
 
-	if (type === "image") {
-		return `![image](${location})`;
-	} else if (type === "video") {
-		return `<video src="${srcPrefix}${location}" controls />`;
-	} else if (type === "audio") {
-		return `<audio src="${srcPrefix}${location}" controls />`;
-	} else if (type === "pdf") {
-		if (localBase) {
-			throw new Error("PDFs cannot be embedded in local mode");
-		}
-		return `<iframe frameborder=0 border=0 width=100% height=800
-	src="https://docs.google.com/viewer?embedded=true&url=${location}?raw=true">
-</iframe>`;
-	} else {
-		throw new Error("Unknown file type");
-	}
+	  if (type === "image") {
+	    return `![image](${location})`;
+	  } else if (type === "video") {
+	    return `<video src="${srcPrefix}${location}" controls />`;
+	  } else if (type === "audio") {
+	    return `<audio src="${srcPrefix}${location}" controls />`;
+	  } else if (type === "pdf") {
+	    if (localBase) {
+	      throw new Error("PDFs cannot be embedded in local mode");
+	    }
+	    return `<iframe frameborder=0 border=0 width=100% height=800
+		src="https://docs.google.com/viewer?embedded=true&url=${location}?raw=true">
+		</iframe>`;
+	  } else if (type === "ppt") {
+	    return `<iframe
+	    src='https://view.officeapps.live.com/op/embed.aspx?src=${location}' 
+	    width='100%' height='600px' frameborder='0'>
+	  </iframe>`;
+	  } else {
+	    throw new Error("Unknown file type");
+	  }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
