@@ -158,7 +158,7 @@ export default class S3UploaderPlugin extends Plugin {
 				const placeholder = `![uploading...](${newFileName})\n`;
 				editor.replaceSelection(placeholder);
 
-				let folder = fm?.folder ?? this.settings.folder;
+				let folder = fm?.folder ?? this.settings.localUploadFolder;
 				const currentDate = new Date();
 				folder = folder
 					.replace("${year}", currentDate.getFullYear().toString())
