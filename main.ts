@@ -191,7 +191,7 @@ export default class S3UploaderPlugin extends Plugin {
 						);
 						url =
 							this.app.vault.adapter instanceof FileSystemAdapter
-								? this.app.vault.adapter.getFullPath(key)
+								? this.app.vault.adapter.getFilePath(key)
 								: key;
 					}
 					const imgMarkdownText = wrapFileDependingOnType(
