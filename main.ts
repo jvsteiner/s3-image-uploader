@@ -163,10 +163,10 @@ export default class S3UploaderPlugin extends Plugin {
 				editor.replaceSelection(placeholder);
 
 				let folder = "";
-				if (localUpload) {
-					folder = fm?.folder ?? this.settings.localUploadFolder;
+				if (localUpload || fm.uploadLocal) {
+				  folder = (_a2 = fm == null ? void 0 : fm.uploadFolder) != null ? _a2 : this.settings.localUploadFolder;
 				} else {
-					folder = fm?.folder ?? this.settings.folder;
+				  folder = (_b2 = fm == null ? void 0 : fm.localUploadFolder) != null ? _b2 : this.settings.folder;
 				}
 
 				const currentDate = new Date();
@@ -376,7 +376,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Bucket folder")
 			.setDesc(
-				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables."
+				'Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables. To override this setting on a per-document basis, you can add `localUploadFolder: "myFolder"` to YAML frontmatter of the note.'
 			)
 			.addText((text) =>
 				text
