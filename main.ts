@@ -164,9 +164,10 @@ export default class S3UploaderPlugin extends Plugin {
 
 				let folder = "";
 				if (localUpload) {
-					folder = fm?.folder ?? this.settings.localUploadFolder;
+					folder =
+						fm?.uploadFolder ?? this.settings.localUploadFolder;
 				} else {
-					folder = fm?.folder ?? this.settings.folder;
+					folder = fm?.uploadFolder ?? this.settings.folder;
 				}
 
 				const currentDate = new Date();
