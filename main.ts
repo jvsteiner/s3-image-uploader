@@ -448,7 +448,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Copy to local folder")
 			.setDesc(
-				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `uploadLocal: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3."
+				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3."
 			)
 			.addToggle((toggle) => {
 				toggle
