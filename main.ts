@@ -100,6 +100,19 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 	}
 
+	async uploadFile(file: File, key: string): Promise<string> {
+		const buf = await file.arrayBuffer();
+		await this.s3.send(
+			new PutObjectCommand({
+				Bucket: this.settings.bucket,
+				Key: key,
+				Body: new Uint8Array(buf),
+				ContentType: file.type,
+			})
+		);
+		return this.settings.imageUrlPath + key;
+	}
+
 	async pasteHandler(
 		ev: ClipboardEvent | DragEvent,
 		editor: Editor
@@ -186,15 +199,7 @@ export default class S3UploaderPlugin extends Plugin {
 				try {
 					let url;
 					if (!localUpload) {
-						await this.s3.send(
-							new PutObjectCommand({
-								Bucket: this.settings.bucket,
-								Key: key,
-								Body: new Uint8Array(buf),
-								ContentType: file.type,
-							})
-						);
-						url = this.settings.imageUrlPath + key;
+						url = await this.uploadFile(file, key);
 					} else {
 						await this.app.vault.adapter.writeBinary(
 							key,
@@ -276,6 +281,58 @@ export default class S3UploaderPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
+
+		this.addCommand({
+			id: "s3-image-uploader",
+			name: "File upload",
+			icon: "upload-cloud",
+			editorCallback: (editor: Editor) => {
+				const input = document.createElement("input");
+				input.setAttribute("type", "file");
+				input.setAttribute(
+					"accept",
+					"image/*,video/*,.doc,.docx,.pdf,.pptx,.xlsx,.xls"
+				);
+				input.onchange = async (event: Event) => {
+					const file = (event.target as any)?.files[0];
+					let thisType = "";
+					if (file.type.match(/video.*/) && uploadVideo) {
+						thisType = "video";
+					} else if (file.type.match(/audio.*/) && uploadAudio) {
+						thisType = "audio";
+					} else if (
+						file.type.match(/application\/pdf/)
+						// uploadPdf
+					) {
+						thisType = "pdf";
+					} else if (file.type.match(/image.*/)) {
+						thisType = "image";
+					} else if (
+						file.type.match(/presentation.*/) ||
+						file.type.match(/powerpoint.*/)
+					) {
+						thisType = "ppt";
+					}
+					if (!thisType) return;
+
+					const buf = await file.arrayBuffer();
+
+					const digest = crypto
+						.createHash("md5")
+						.update(new Uint8Array(buf))
+						.digest("hex");
+
+					const newFileName = `${digest}.${file.name
+						.split(".")
+						.pop()}`;
+
+					const key = newFileName;
+
+					url = await this.uploadFile(file, key);
+				};
+				input.click();
+			},
+		});
 	}
 
 	onunload() {}
