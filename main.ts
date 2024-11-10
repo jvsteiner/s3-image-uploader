@@ -50,6 +50,8 @@ interface S3UploaderSettings {
 	uploadAudio: boolean;
 	uploadPdf: boolean;
 	bypassCors: boolean;
+	queryStringValue: string;
+	queryStringKey: string;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -71,6 +73,8 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	uploadAudio: false,
 	uploadPdf: false,
 	bypassCors: false,
+	queryStringValue: "",
+	queryStringKey: ""
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -98,6 +102,27 @@ export default class S3UploaderPlugin extends Plugin {
 				break;
 			}
 		}
+	}
+
+	async uploadFile(file: File, key: string): Promise<string> {
+		const buf = await file.arrayBuffer();
+		await this.s3.send(
+			new PutObjectCommand({
+				Bucket: this.settings.bucket,
+				Key: key,
+				Body: new Uint8Array(buf),
+				ContentType: file.type,
+			})
+		);
+		let urlString = this.settings.imageUrlPath + key;
+		if (this.settings.queryStringKey && this.settings.queryStringValue) {
+			let urlObject = new URL(urlString);
+
+			// The searchParams property provides methods to manipulate query parameters
+			urlObject.searchParams.append(this.settings.queryStringKey, this.settings.queryStringValue);
+			urlString = urlObject.toString();
+		}
+		return urlString;
 	}
 
 	async pasteHandler(
@@ -186,15 +211,7 @@ export default class S3UploaderPlugin extends Plugin {
 				try {
 					let url;
 					if (!localUpload) {
-						await this.s3.send(
-							new PutObjectCommand({
-								Bucket: this.settings.bucket,
-								Key: key,
-								Body: new Uint8Array(buf),
-								ContentType: file.type,
-							})
-						);
-						url = this.settings.imageUrlPath + key;
+						url = await this.uploadFile(file, key);
 					} else {
 						await this.app.vault.adapter.writeBinary(
 							key,
@@ -562,6 +579,27 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+		new Setting(containerEl)
+			.setName('Query String Key')
+			.setDesc('Appended to the end of the URL. Optional')
+			.addText(text => text
+				.setPlaceholder('Empty means no query string key')
+				.setValue(this.plugin.settings.queryStringKey)
+				.onChange(async (value) => {
+					this.plugin.settings.queryStringKey = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Query String Value')
+			.setDesc('Appended to the end of the URL. Optional')
+			.addText(text => text
+				.setPlaceholder('Empty means no query string value')
+				.setValue(this.plugin.settings.queryStringValue)
+				.onChange(async (value) => {
+					this.plugin.settings.queryStringValue = value;
+					await this.plugin.saveSettings();
+				}));
 	}
 }
 
