@@ -312,6 +312,13 @@ export default class S3UploaderPlugin extends Plugin {
 			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
 		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file, source) => {
+				new Notice(
+					`File Menu Event:\nSource: ${source}\nFile: ${file?.path}`
+				);
+			})
+		);
+		this.registerEvent(
 			this.app.workspace.on("editor-change", (editor, changeObj) => {
 				// Log the change event to see what's happening
 				new Notice(
