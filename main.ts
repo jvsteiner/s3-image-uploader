@@ -293,39 +293,19 @@ export default class S3UploaderPlugin extends Plugin {
 		this.pasteFunction = this.pasteHandler.bind(this);
 
 		this.registerEvent(
-			this.app.workspace.on("editor-paste", this.pasteFunction)
-		);
-		this.registerEvent(
-			this.app.workspace.on("editor-drop", this.pasteFunction)
-		);
+			this.app.workspace.on(
+				"editor-paste",
+				async (evt: ClipboardEvent, editor: Editor) => {
+					// Handle normal paste events
+					await this.pasteHandler(evt, editor);
 
-		// Add this new event handler for mobile file attachments
-		this.registerEvent(
-			this.app.workspace.on("file-menu", (menu, file, source) => {
-				if (source !== "attachment-menu" || !(file instanceof TFile))
-					return;
-
-				menu.addItem((item) => {
-					item.setTitle("Upload to S3")
-						.setIcon("upload")
-						.onClick(async () => {
-							const activeView =
-								this.app.workspace.getActiveViewOfType(
-									MarkdownView
-								);
-							if (!activeView) return;
-
-							const editor = activeView.editor;
-							const fileArray = await this.app.vault.readBinary(
-								file
-							);
-							const mimeType = getMimeType(file.extension);
-							const fileBlob = new Blob([fileArray], {
-								type: mimeType,
-							});
-							const uploadFile = new File([fileBlob], file.name, {
-								type: mimeType,
-							});
+					// Handle file attachments if present
+					const files = evt.clipboardData?.files;
+					if (files && files.length > 0) {
+						evt.preventDefault();
+						for (let i = 0; i < files.length; i++) {
+							const file = files[i];
+							if (!file.type.startsWith("image/")) continue;
 
 							const placeholder = `![uploading...](${file.name})\n`;
 							editor.replaceSelection(placeholder);
@@ -334,10 +314,7 @@ export default class S3UploaderPlugin extends Plugin {
 								const key = this.settings.folder
 									? `${this.settings.folder}/${file.name}`
 									: file.name;
-								const url = await this.uploadFile(
-									uploadFile,
-									key
-								);
+								const url = await this.uploadFile(file, key);
 								const imgMarkdownText = wrapFileDependingOnType(
 									url,
 									"image",
@@ -358,9 +335,14 @@ export default class S3UploaderPlugin extends Plugin {
 								);
 								new Notice("Failed to upload file");
 							}
-						});
-				});
-			})
+						}
+					}
+				}
+			)
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
 	}
 
