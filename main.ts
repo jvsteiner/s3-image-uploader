@@ -11,6 +11,8 @@ import {
 	FileSystemAdapter,
 	RequestUrlParam,
 	requestUrl,
+	TFile,
+	MarkdownView,
 } from "obsidian";
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
@@ -311,26 +313,40 @@ export default class S3UploaderPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
-		this.registerEvent(
-			this.app.workspace.on("file-menu", (menu, file, source) => {
-				new Notice(
-					`File Menu Event:\nSource: ${source}\nFile: ${file?.path}`
-				);
-			})
-		);
-		this.registerEvent(
-			this.app.workspace.on("editor-change", (editor, changeObj) => {
-				// Log the change event to see what's happening
-				new Notice(
-					`Change Event:\n${JSON.stringify(changeObj, null, 2)}`
-				);
-			})
-		);
-
 		// Add mobile-specific event monitoring
 		this.registerEvent(
-			this.app.vault.on("create", (file) => {
-				new Notice(`File Created: ${file.path}`);
+			this.app.vault.on("create", async (file) => {
+				if (!(file instanceof TFile)) return;
+				if (!file.path.match(/\.(jpg|jpeg|png|gif|webp)$/i)) return;
+
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) return;
+
+				try {
+					// Read the file content
+					const fileContent = await this.app.vault.readBinary(file);
+					const newFile = new File([fileContent], file.name, {
+						type: `image/${file.extension}`,
+					});
+
+					// Get the active editor
+					const activeView =
+						this.app.workspace.getActiveViewOfType(MarkdownView);
+					if (!activeView) return;
+
+					// Use our existing paste handler
+					await this.pasteHandler(
+						new ClipboardEvent("paste", {
+							clipboardData: new DataTransfer(),
+						}),
+						activeView.editor
+					);
+
+					// Delete the original file from the vault
+					await this.app.vault.delete(file);
+				} catch (error) {
+					new Notice(`Error processing file: ${error.message}`);
+				}
 			})
 		);
 	}
