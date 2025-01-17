@@ -331,13 +331,6 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!activeView) return;
 
 				try {
-					// Get the original link before we do anything else
-					const originalContent = activeView.editor.getValue();
-					const linkRegex = new RegExp(
-						`!\\[\\[${file.name}\\]\\]\\n?`
-					);
-					const match = originalContent.match(linkRegex);
-
 					const fileContent = await this.app.vault.readBinary(file);
 					const newFile = new File([fileContent], file.name, {
 						type: `image/${file.extension}`,
@@ -346,9 +339,19 @@ export default class S3UploaderPlugin extends Plugin {
 					// Do the upload
 					await this.pasteHandler(null, activeView.editor, newFile);
 
+					// Small delay to ensure editor content is updated
+					await new Promise((resolve) => setTimeout(resolve, 50));
+
 					// Now remove the original link if it exists
+					const content = activeView.editor.getValue();
+					// More permissive regex to catch variations
+					const linkRegex = new RegExp(
+						`!\\[\\[${file.name}\\]\\](?:\\n|$)`
+					);
+					const match = content.match(linkRegex);
+
 					if (match) {
-						const content = activeView.editor.getValue();
+						new Notice("Found original link, removing...");
 						const position = content.indexOf(match[0]);
 						if (position !== -1) {
 							const from =
@@ -358,6 +361,8 @@ export default class S3UploaderPlugin extends Plugin {
 							);
 							activeView.editor.replaceRange("", from, to);
 						}
+					} else {
+						new Notice("Original link not found");
 					}
 
 					await this.app.vault.delete(file);
