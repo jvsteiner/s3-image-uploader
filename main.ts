@@ -131,10 +131,11 @@ export default class S3UploaderPlugin extends Plugin {
 	}
 
 	async pasteHandler(
-		ev: ClipboardEvent | DragEvent,
-		editor: Editor
+		ev: ClipboardEvent | DragEvent | null,
+		editor: Editor,
+		directFile?: File
 	): Promise<void> {
-		if (ev.defaultPrevented) {
+		if (ev?.defaultPrevented) {
 			return;
 		}
 
@@ -147,8 +148,32 @@ export default class S3UploaderPlugin extends Plugin {
 		const uploadAudio = fm?.uploadAudio ?? this.settings.uploadAudio;
 		const uploadPdf = fm?.uploadPdf ?? this.settings.uploadPdf;
 
+		let files: File[] = [];
+		if (directFile) {
+			files = [directFile];
+		} else if (ev) {
+			switch (ev.type) {
+				case "paste":
+					files = Array.from(
+						(ev as ClipboardEvent).clipboardData?.files || []
+					);
+					break;
+				case "drop":
+					if (
+						!this.settings.uploadOnDrag &&
+						!(fm && fm.uploadOnDrag)
+					) {
+						return;
+					}
+					files = Array.from(
+						(ev as DragEvent).dataTransfer?.files || []
+					);
+					break;
+			}
+		}
+
 		new Notice(
-			`Event: ${ev.type}\nContents: ${JSON.stringify(
+			`Event: ${ev?.type}\nContents: ${JSON.stringify(
 				ev,
 				(key, value) => {
 					if (value instanceof Node) return "DOM Node";
@@ -158,27 +183,8 @@ export default class S3UploaderPlugin extends Plugin {
 			)}`
 		);
 
-		let files: File[] = [];
-		switch (ev.type) {
-			case "paste":
-				files = Array.from(
-					(ev as ClipboardEvent).clipboardData?.files || []
-				);
-				break;
-			case "drop":
-				if (!this.settings.uploadOnDrag && !(fm && fm.uploadOnDrag)) {
-					return;
-				}
-				files = Array.from((ev as DragEvent).dataTransfer?.files || []);
-				break;
-			default:
-				console.log("Unknown event type");
-				console.log(ev);
-				return;
-		}
-
 		if (files.length > 0) {
-			ev.preventDefault();
+			ev?.preventDefault();
 
 			const uploads = files.map(async (file) => {
 				let thisType = "";
@@ -319,30 +325,17 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!(file instanceof TFile)) return;
 				if (!file.path.match(/\.(jpg|jpeg|png|gif|webp)$/i)) return;
 
-				const activeFile = this.app.workspace.getActiveFile();
-				if (!activeFile) return;
+				const activeView =
+					this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (!activeView) return;
 
 				try {
-					// Read the file content
 					const fileContent = await this.app.vault.readBinary(file);
 					const newFile = new File([fileContent], file.name, {
 						type: `image/${file.extension}`,
 					});
 
-					// Get the active editor
-					const activeView =
-						this.app.workspace.getActiveViewOfType(MarkdownView);
-					if (!activeView) return;
-
-					// Use our existing paste handler
-					await this.pasteHandler(
-						new ClipboardEvent("paste", {
-							clipboardData: new DataTransfer(),
-						}),
-						activeView.editor
-					);
-
-					// Delete the original file from the vault
+					await this.pasteHandler(null, activeView.editor, newFile);
 					await this.app.vault.delete(file);
 				} catch (error) {
 					new Notice(`Error processing file: ${error.message}`);
