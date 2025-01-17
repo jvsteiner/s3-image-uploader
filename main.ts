@@ -11,6 +11,8 @@ import {
 	FileSystemAdapter,
 	RequestUrlParam,
 	requestUrl,
+	MarkdownView,
+	TFile,
 } from "obsidian";
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
@@ -74,7 +76,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	uploadPdf: false,
 	bypassCors: false,
 	queryStringValue: "",
-	queryStringKey: ""
+	queryStringKey: "",
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -119,7 +121,10 @@ export default class S3UploaderPlugin extends Plugin {
 			let urlObject = new URL(urlString);
 
 			// The searchParams property provides methods to manipulate query parameters
-			urlObject.searchParams.append(this.settings.queryStringKey, this.settings.queryStringValue);
+			urlObject.searchParams.append(
+				this.settings.queryStringKey,
+				this.settings.queryStringValue
+			);
 			urlString = urlObject.toString();
 		}
 		return urlString;
@@ -292,6 +297,70 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.workspace.on("editor-drop", this.pasteFunction)
+		);
+
+		// Add this new event handler for mobile file attachments
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file, source) => {
+				if (source !== "attachment-menu" || !(file instanceof TFile))
+					return;
+
+				menu.addItem((item) => {
+					item.setTitle("Upload to S3")
+						.setIcon("upload")
+						.onClick(async () => {
+							const activeView =
+								this.app.workspace.getActiveViewOfType(
+									MarkdownView
+								);
+							if (!activeView) return;
+
+							const editor = activeView.editor;
+							const fileArray = await this.app.vault.readBinary(
+								file
+							);
+							const mimeType = getMimeType(file.extension);
+							const fileBlob = new Blob([fileArray], {
+								type: mimeType,
+							});
+							const uploadFile = new File([fileBlob], file.name, {
+								type: mimeType,
+							});
+
+							const placeholder = `![uploading...](${file.name})\n`;
+							editor.replaceSelection(placeholder);
+
+							try {
+								const key = this.settings.folder
+									? `${this.settings.folder}/${file.name}`
+									: file.name;
+								const url = await this.uploadFile(
+									uploadFile,
+									key
+								);
+								const imgMarkdownText = wrapFileDependingOnType(
+									url,
+									"image",
+									""
+								);
+								this.replaceText(
+									editor,
+									placeholder,
+									imgMarkdownText
+								);
+								new Notice("File uploaded successfully");
+							} catch (error) {
+								console.error(error);
+								this.replaceText(
+									editor,
+									placeholder,
+									`Error uploading file: ${error.message}\n`
+								);
+								new Notice("Failed to upload file");
+							}
+						});
+				});
+			})
 		);
 	}
 
@@ -580,26 +649,30 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 		new Setting(containerEl)
-			.setName('Query String Key')
-			.setDesc('Appended to the end of the URL. Optional')
-			.addText(text => text
-				.setPlaceholder('Empty means no query string key')
-				.setValue(this.plugin.settings.queryStringKey)
-				.onChange(async (value) => {
-					this.plugin.settings.queryStringKey = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName("Query String Key")
+			.setDesc("Appended to the end of the URL. Optional")
+			.addText((text) =>
+				text
+					.setPlaceholder("Empty means no query string key")
+					.setValue(this.plugin.settings.queryStringKey)
+					.onChange(async (value) => {
+						this.plugin.settings.queryStringKey = value;
+						await this.plugin.saveSettings();
+					})
+			);
 
 		new Setting(containerEl)
-			.setName('Query String Value')
-			.setDesc('Appended to the end of the URL. Optional')
-			.addText(text => text
-				.setPlaceholder('Empty means no query string value')
-				.setValue(this.plugin.settings.queryStringValue)
-				.onChange(async (value) => {
-					this.plugin.settings.queryStringValue = value;
-					await this.plugin.saveSettings();
-				}));
+			.setName("Query String Value")
+			.setDesc("Appended to the end of the URL. Optional")
+			.addText((text) =>
+				text
+					.setPlaceholder("Empty means no query string value")
+					.setValue(this.plugin.settings.queryStringValue)
+					.onChange(async (value) => {
+						this.plugin.settings.queryStringValue = value;
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 }
 
@@ -768,4 +841,16 @@ class ObsHttpHandler extends FetchHttpHandler {
 
 const bufferToArrayBuffer = (b: Buffer | Uint8Array | ArrayBufferView) => {
 	return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+};
+
+const getMimeType = (extension: string): string => {
+	const mimeTypes: Record<string, string> = {
+		png: "image/png",
+		jpg: "image/jpeg",
+		jpeg: "image/jpeg",
+		gif: "image/gif",
+		webp: "image/webp",
+		// Add other types as needed
+	};
+	return mimeTypes[extension.toLowerCase()] || "application/octet-stream";
 };
