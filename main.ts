@@ -178,8 +178,9 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 
 		// Only prevent default if we have files to handle
-		if (files.length > 0 && ev) {
-			ev.preventDefault();
+		if (files.length > 0) {
+			new Notice("Uploading files...");
+			if (ev) ev.preventDefault();
 
 			const uploads = files.map(async (file) => {
 				let thisType = "";
@@ -197,7 +198,10 @@ export default class S3UploaderPlugin extends Plugin {
 				) {
 					thisType = "ppt";
 				}
-				if (!thisType) return;
+				if (!thisType) {
+					new Notice("no file type found...");
+					return;
+				}
 
 				const buf = await file.arrayBuffer();
 				const digest = await generateFileHash(new Uint8Array(buf));
@@ -256,9 +260,9 @@ export default class S3UploaderPlugin extends Plugin {
 				}
 			});
 
-			await Promise.all(uploads).then(() => {
-				new Notice("All files processed.");
-			});
+			// Wait for all uploads to complete
+			await Promise.all(uploads);
+			new Notice("All files processed.");
 		}
 	}
 
@@ -327,31 +331,33 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!activeView) return;
 
 				try {
+					// Get the original link before we do anything else
+					const originalContent = activeView.editor.getValue();
+					const linkRegex = new RegExp(
+						`!\\[\\[${file.name}\\]\\]\\n?`
+					);
+					const match = originalContent.match(linkRegex);
+
 					const fileContent = await this.app.vault.readBinary(file);
 					const newFile = new File([fileContent], file.name, {
 						type: `image/${file.extension}`,
 					});
 
-					// Wait for paste handler to complete before removing the original link
+					// Do the upload
 					await this.pasteHandler(null, activeView.editor, newFile);
 
-					// Small delay to ensure the upload completes and text is replaced
-					await new Promise((resolve) => setTimeout(resolve, 100));
-
-					// Then find and remove Obsidian's auto-inserted link
-					const content = activeView.editor.getValue();
-					const linkRegex = new RegExp(
-						`!\\[\\[${file.name}\\]\\]\\n?`
-					);
-					const match = content.match(linkRegex);
-
+					// Now remove the original link if it exists
 					if (match) {
+						const content = activeView.editor.getValue();
 						const position = content.indexOf(match[0]);
-						const from = activeView.editor.offsetToPos(position);
-						const to = activeView.editor.offsetToPos(
-							position + match[0].length
-						);
-						activeView.editor.replaceRange("", from, to);
+						if (position !== -1) {
+							const from =
+								activeView.editor.offsetToPos(position);
+							const to = activeView.editor.offsetToPos(
+								position + match[0].length
+							);
+							activeView.editor.replaceRange("", from, to);
+						}
 					}
 
 					await this.app.vault.delete(file);
