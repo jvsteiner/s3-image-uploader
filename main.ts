@@ -327,13 +327,14 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!activeView) return;
 
 				try {
-					// Get the current cursor position before any changes
-					const cursorPosition = activeView.editor.getCursor();
-
 					// Find and remove the original markdown link that Obsidian auto-inserted
 					const content = activeView.editor.getValue();
+					// More permissive regex that matches variations of the auto-inserted link
 					const linkRegex = new RegExp(
-						`!\\[\\]\\(${file.path}\\)\n?`
+						`!\\[.*?\\]\\(${file.path.replace(
+							/[.*+?^${}()|[\]\\]/g,
+							"\\$&"
+						)}\\)\\n?`
 					);
 					const match = content.match(linkRegex);
 
@@ -343,8 +344,6 @@ export default class S3UploaderPlugin extends Plugin {
 						const to = activeView.editor.offsetToPos(
 							position + match[0].length
 						);
-
-						// Remove the original link
 						activeView.editor.replaceRange("", from, to);
 					}
 
