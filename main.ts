@@ -199,7 +199,6 @@ export default class S3UploaderPlugin extends Plugin {
 					thisType = "ppt";
 				}
 				if (!thisType) {
-					new Notice("no file type found...");
 					return;
 				}
 
@@ -262,7 +261,6 @@ export default class S3UploaderPlugin extends Plugin {
 
 			// Wait for all uploads to complete
 			await Promise.all(uploads);
-			new Notice("All files processed.");
 		}
 	}
 
