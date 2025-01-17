@@ -332,8 +332,11 @@ export default class S3UploaderPlugin extends Plugin {
 						type: `image/${file.extension}`,
 					});
 
-					// Run paste handler first
+					// Wait for paste handler to complete before removing the original link
 					await this.pasteHandler(null, activeView.editor, newFile);
+
+					// Small delay to ensure the upload completes and text is replaced
+					await new Promise((resolve) => setTimeout(resolve, 100));
 
 					// Then find and remove Obsidian's auto-inserted link
 					const content = activeView.editor.getValue();
