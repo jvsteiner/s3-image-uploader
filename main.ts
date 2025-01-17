@@ -145,6 +145,17 @@ export default class S3UploaderPlugin extends Plugin {
 		const uploadAudio = fm?.uploadAudio ?? this.settings.uploadAudio;
 		const uploadPdf = fm?.uploadPdf ?? this.settings.uploadPdf;
 
+		new Notice(
+			`Event: ${ev.type}\nContents: ${JSON.stringify(
+				ev,
+				(key, value) => {
+					if (value instanceof Node) return "DOM Node";
+					return value;
+				},
+				2
+			)}`
+		);
+
 		let files: File[] = [];
 		switch (ev.type) {
 			case "paste":
@@ -159,7 +170,8 @@ export default class S3UploaderPlugin extends Plugin {
 				files = Array.from((ev as DragEvent).dataTransfer?.files || []);
 				break;
 			default:
-				new Notice(`Unknown event type: ${ev.type}`);
+				console.log("Unknown event type");
+				console.log(ev);
 				return;
 		}
 
