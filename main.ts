@@ -30,7 +30,11 @@ import * as crypto from "crypto";
 // Remember to rename these classes and interfaces!
 
 interface pasteFunction {
-	(this: HTMLElement, event: ClipboardEvent | DragEvent): void;
+	(
+		this: HTMLElement,
+		event: ClipboardEvent | DragEvent,
+		editor: Editor
+	): void;
 }
 
 interface S3UploaderSettings {
@@ -139,6 +143,9 @@ export default class S3UploaderPlugin extends Plugin {
 			return;
 		}
 
+		// Prevent default early if we have an event
+		if (ev) ev.preventDefault();
+
 		const noteFile = this.app.workspace.getActiveFile();
 		if (!noteFile || !noteFile.name) return;
 
@@ -172,20 +179,7 @@ export default class S3UploaderPlugin extends Plugin {
 			}
 		}
 
-		new Notice(
-			`Event: ${ev?.type}\nContents: ${JSON.stringify(
-				ev,
-				(key, value) => {
-					if (value instanceof Node) return "DOM Node";
-					return value;
-				},
-				2
-			)}`
-		);
-
 		if (files.length > 0) {
-			ev?.preventDefault();
-
 			const uploads = files.map(async (file) => {
 				let thisType = "";
 				if (file.type.match(/video.*/) && uploadVideo) {
@@ -311,7 +305,12 @@ export default class S3UploaderPlugin extends Plugin {
 			});
 		}
 
-		this.pasteFunction = this.pasteHandler.bind(this);
+		this.pasteFunction = (
+			event: ClipboardEvent | DragEvent,
+			editor: Editor
+		) => {
+			this.pasteHandler(event, editor);
+		};
 
 		this.registerEvent(
 			this.app.workspace.on("editor-paste", this.pasteFunction)
