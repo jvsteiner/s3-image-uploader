@@ -144,9 +144,6 @@ export default class S3UploaderPlugin extends Plugin {
 			return;
 		}
 
-		// Prevent default early if we have an event
-		if (ev) ev.preventDefault();
-
 		const noteFile = this.app.workspace.getActiveFile();
 		if (!noteFile || !noteFile.name) return;
 
@@ -180,7 +177,10 @@ export default class S3UploaderPlugin extends Plugin {
 			}
 		}
 
-		if (files.length > 0) {
+		// Only prevent default if we have files to handle
+		if (files.length > 0 && ev) {
+			ev.preventDefault();
+
 			const uploads = files.map(async (file) => {
 				let thisType = "";
 				if (file.type.match(/video.*/) && uploadVideo) {
