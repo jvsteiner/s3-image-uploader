@@ -327,14 +327,18 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!activeView) return;
 
 				try {
-					// Find and remove the original markdown link that Obsidian auto-inserted
+					const fileContent = await this.app.vault.readBinary(file);
+					const newFile = new File([fileContent], file.name, {
+						type: `image/${file.extension}`,
+					});
+
+					// Run paste handler first
+					await this.pasteHandler(null, activeView.editor, newFile);
+
+					// Then find and remove Obsidian's auto-inserted link
 					const content = activeView.editor.getValue();
-					// More permissive regex that matches variations of the auto-inserted link
 					const linkRegex = new RegExp(
-						`!\\[.*?\\]\\(${file.path.replace(
-							/[.*+?^${}()|[\]\\]/g,
-							"\\$&"
-						)}\\)\\n?`
+						`!\\[\\[${file.name}\\]\\]\\n?`
 					);
 					const match = content.match(linkRegex);
 
@@ -347,13 +351,6 @@ export default class S3UploaderPlugin extends Plugin {
 						activeView.editor.replaceRange("", from, to);
 					}
 
-					// Now proceed with our upload and replacement
-					const fileContent = await this.app.vault.readBinary(file);
-					const newFile = new File([fileContent], file.name, {
-						type: `image/${file.extension}`,
-					});
-
-					await this.pasteHandler(null, activeView.editor, newFile);
 					await this.app.vault.delete(file);
 				} catch (error) {
 					new Notice(`Error processing file: ${error.message}`);
