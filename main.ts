@@ -311,6 +311,14 @@ export default class S3UploaderPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
+		this.registerEvent(
+			this.app.workspace.on("editor-change", (editor, changeObj) => {
+				// Log the change event to see what's happening
+				new Notice(
+					`Change Event:\n${JSON.stringify(changeObj, null, 2)}`
+				);
+			})
+		);
 	}
 
 	onunload() {}
