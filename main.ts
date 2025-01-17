@@ -326,6 +326,13 @@ export default class S3UploaderPlugin extends Plugin {
 				);
 			})
 		);
+
+		// Add mobile-specific event monitoring
+		this.registerEvent(
+			this.app.vault.on("create", (file) => {
+				new Notice(`File Created: ${file.path}`);
+			})
+		);
 	}
 
 	onunload() {}
