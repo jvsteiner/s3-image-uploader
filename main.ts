@@ -25,7 +25,6 @@ import {
 } from "@smithy/fetch-http-handler";
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-import * as crypto from "crypto";
 
 // Remember to rename these classes and interfaces!
 
@@ -93,20 +92,22 @@ export default class S3UploaderPlugin extends Plugin {
 		target: string,
 		replacement: string
 	): void {
-		target = target.trim();
-		const lines = editor.getValue().split("\n");
-		for (let i = 0; i < lines.length; i++) {
-			const ch = lines[i].indexOf(target);
-			if (ch !== -1) {
-				const from = { line: i, ch: ch } as EditorPosition;
-				const to = {
-					line: i,
-					ch: ch + target.length,
-				} as EditorPosition;
-				editor.setCursor(from);
-				editor.replaceRange(replacement, from, to);
-				break;
-			}
+		const content = editor.getValue();
+		const position = content.indexOf(target);
+
+		if (position !== -1) {
+			const from = editor.offsetToPos(position);
+			const to = editor.offsetToPos(position + target.length);
+
+			editor.transaction({
+				changes: [
+					{
+						from,
+						to,
+						text: replacement,
+					},
+				],
+			});
 		}
 	}
 
@@ -199,10 +200,7 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!thisType) return;
 
 				const buf = await file.arrayBuffer();
-				const digest = crypto
-					.createHash("md5")
-					.update(new Uint8Array(buf))
-					.digest("hex");
+				const digest = await generateFileHash(new Uint8Array(buf));
 				const newFileName = `${digest}.${file.name.split(".").pop()}`;
 				const placeholder = `![uploading...](${newFileName})\n`;
 				editor.replaceSelection(placeholder);
@@ -821,3 +819,12 @@ class ObsHttpHandler extends FetchHttpHandler {
 const bufferToArrayBuffer = (b: Buffer | Uint8Array | ArrayBufferView) => {
 	return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 };
+
+async function generateFileHash(data: Uint8Array): Promise<string> {
+	const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+	const hashArray = Array.from(new Uint8Array(hashBuffer));
+	const hashHex = hashArray
+		.map((b) => b.toString(16).padStart(2, "0"))
+		.join("");
+	return hashHex.slice(0, 32); // Truncate to same length as MD5 for compatibility
+}
