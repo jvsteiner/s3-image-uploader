@@ -327,6 +327,28 @@ export default class S3UploaderPlugin extends Plugin {
 				if (!activeView) return;
 
 				try {
+					// Get the current cursor position before any changes
+					const cursorPosition = activeView.editor.getCursor();
+
+					// Find and remove the original markdown link that Obsidian auto-inserted
+					const content = activeView.editor.getValue();
+					const linkRegex = new RegExp(
+						`!\\[\\]\\(${file.path}\\)\n?`
+					);
+					const match = content.match(linkRegex);
+
+					if (match) {
+						const position = content.indexOf(match[0]);
+						const from = activeView.editor.offsetToPos(position);
+						const to = activeView.editor.offsetToPos(
+							position + match[0].length
+						);
+
+						// Remove the original link
+						activeView.editor.replaceRange("", from, to);
+					}
+
+					// Now proceed with our upload and replacement
 					const fileContent = await this.app.vault.readBinary(file);
 					const newFile = new File([fileContent], file.name, {
 						type: `image/${file.extension}`,
