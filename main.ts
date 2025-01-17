@@ -344,25 +344,17 @@ export default class S3UploaderPlugin extends Plugin {
 
 					// Now remove the original link if it exists
 					const content = activeView.editor.getValue();
-					// More permissive regex to catch variations
-					const linkRegex = new RegExp(
-						`!\\[\\[${file.name}\\]\\](?:\\n|$)`
-					);
-					const match = content.match(linkRegex);
+					const obsidianLink = `![[${file.name}]]`; // Exact pattern we want to find
+					const position = content.indexOf(obsidianLink);
 
-					if (match) {
-						new Notice("Found original link, removing...");
-						const position = content.indexOf(match[0]);
-						if (position !== -1) {
-							const from =
-								activeView.editor.offsetToPos(position);
-							const to = activeView.editor.offsetToPos(
-								position + match[0].length
-							);
-							activeView.editor.replaceRange("", from, to);
-						}
+					if (position !== -1) {
+						const from = activeView.editor.offsetToPos(position);
+						const to = activeView.editor.offsetToPos(
+							position + obsidianLink.length
+						);
+						activeView.editor.replaceRange("", from, to);
 					} else {
-						new Notice("Original link not found");
+						new Notice(`Failed to find: ${obsidianLink}`);
 					}
 
 					await this.app.vault.delete(file);
