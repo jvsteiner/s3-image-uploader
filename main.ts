@@ -26,7 +26,7 @@ import {
 
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
-// Remember to rename these classes and interfaces!
+// Remember to rename these classes and interfaces!!
 
 interface pasteFunction {
 	(
@@ -87,27 +87,96 @@ export default class S3UploaderPlugin extends Plugin {
 	s3: S3Client;
 	pasteFunction: pasteFunction;
 
-	private replaceText(
+	private async replaceText(
 		editor: Editor,
 		target: string,
 		replacement: string
-	): void {
+	): Promise<void> {
 		const content = editor.getValue();
 		const position = content.indexOf(target);
 
-		if (position !== -1) {
-			const from = editor.offsetToPos(position);
-			const to = editor.offsetToPos(position + target.length);
+		console.log("replaceText called:", { target, replacement });
 
-			editor.transaction({
-				changes: [
-					{
-						from,
-						to,
-						text: replacement,
-					},
-				],
+		if (position !== -1) {
+			console.log("Target found at position:", position);
+
+			// Check if we're in a table by looking for pipe characters around the target
+			const surroundingBefore = content.substring(
+				Math.max(0, position - 20),
+				position
+			);
+			const surroundingAfter = content.substring(
+				position + target.length,
+				Math.min(content.length, position + target.length + 20)
+			);
+
+			console.log("Surrounding text:", {
+				before: surroundingBefore,
+				after: surroundingAfter,
 			});
+
+			const isInTable =
+				surroundingBefore.includes("|") &&
+				surroundingAfter.includes("|");
+			console.log("Is in table:", isInTable);
+
+			// For tables, we need to be more careful with the replacement
+			if (isInTable) {
+				// Get the line containing the target
+				const from = editor.offsetToPos(position);
+				const to = editor.offsetToPos(position + target.length);
+
+				console.log("Table replacement positions:", { from, to });
+
+				try {
+					// Use a more direct approach for tables
+					editor.transaction({
+						changes: [
+							{
+								from,
+								to,
+								text: replacement,
+							},
+						],
+					});
+					console.log("Table transaction completed");
+
+					// Force a refresh of the editor to ensure the table renders correctly
+					setTimeout(() => {
+						try {
+							editor.refresh();
+							console.log("Editor refreshed");
+						} catch (e) {
+							console.error("Error refreshing editor:", e);
+						}
+					}, 100); // Increased timeout for better reliability
+				} catch (e) {
+					console.error("Error during table transaction:", e);
+				}
+			} else {
+				// Normal replacement for non-table content
+				const from = editor.offsetToPos(position);
+				const to = editor.offsetToPos(position + target.length);
+
+				console.log("Normal replacement positions:", { from, to });
+
+				try {
+					editor.transaction({
+						changes: [
+							{
+								from,
+								to,
+								text: replacement,
+							},
+						],
+					});
+					console.log("Normal transaction completed");
+				} catch (e) {
+					console.error("Error during normal transaction:", e);
+				}
+			}
+		} else {
+			console.log("Target not found in content");
 		}
 	}
 
@@ -179,8 +248,11 @@ export default class S3UploaderPlugin extends Plugin {
 
 		// Only prevent default if we have files to handle
 		if (files.length > 0) {
-			new Notice("Uploading files...");
 			if (ev) ev.preventDefault();
+			new Notice("Uploading files...");
+
+			// Remember cursor position before any changes
+			const cursorPos = editor.getCursor();
 
 			const uploads = files.map(async (file) => {
 				let thisType = "";
@@ -202,12 +274,12 @@ export default class S3UploaderPlugin extends Plugin {
 					return;
 				}
 
+				// Process the file
 				const buf = await file.arrayBuffer();
 				const digest = await generateFileHash(new Uint8Array(buf));
 				const newFileName = `${digest}.${file.name.split(".").pop()}`;
-				const placeholder = `![uploading...](${newFileName})\n`;
-				editor.replaceSelection(placeholder);
 
+				// Determine folder
 				let folder = "";
 				if (localUpload) {
 					folder =
@@ -230,6 +302,7 @@ export default class S3UploaderPlugin extends Plugin {
 				const key = folder ? `${folder}/${newFileName}` : newFileName;
 
 				try {
+					// Upload the file
 					let url;
 					if (!localUpload) {
 						url = await this.uploadFile(file, key);
@@ -243,24 +316,45 @@ export default class S3UploaderPlugin extends Plugin {
 								? this.app.vault.adapter.getFilePath(key)
 								: key;
 					}
-					const imgMarkdownText = wrapFileDependingOnType(
-						url,
-						thisType,
-						""
-					);
-					this.replaceText(editor, placeholder, imgMarkdownText);
+
+					// Generate the markdown
+					return wrapFileDependingOnType(url, thisType, "");
 				} catch (error) {
 					console.error(error);
-					this.replaceText(
-						editor,
-						placeholder,
-						`Error uploading file: ${error.message}\n`
-					);
+					return `Error uploading file: ${error.message}`;
 				}
 			});
 
-			// Wait for all uploads to complete
-			await Promise.all(uploads);
+			try {
+				// Wait for all uploads to complete
+				const results = await Promise.all(uploads);
+
+				// Filter out undefined results (from unsupported file types)
+				const validResults = results.filter(
+					(result) => result !== undefined
+				);
+
+				// Insert all results at once at the cursor position
+				if (validResults.length > 0) {
+					// Use a safer approach to insert text
+					const text = validResults.join("\n");
+
+					// Use transaction API instead of replaceSelection
+					editor.transaction({
+						changes: [
+							{
+								from: cursorPos,
+								text: text,
+							},
+						],
+					});
+
+					new Notice("All files uploaded successfully");
+				}
+			} catch (error) {
+				console.error("Error during upload or insertion:", error);
+				new Notice(`Error: ${error.message}`);
+			}
 		}
 	}
 
