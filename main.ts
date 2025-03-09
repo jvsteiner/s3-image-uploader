@@ -38,12 +38,6 @@ interface pasteFunction {
 	): void;
 }
 
-enum ImageCompressionMethods {
-	None = "none",
-	Local = "local",
-	TinyPNG = "tinypng",
-}
-
 interface S3UploaderSettings {
 	accessKey: string;
 	secretKey: string;
@@ -65,10 +59,7 @@ interface S3UploaderSettings {
 	bypassCors: boolean;
 	queryStringValue: string;
 	queryStringKey: string;
-
-	// Image Compression
-	imageCompressionMethod: string;
-	tinyPngApiKey: string;
+	enableImageCompression: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -92,8 +83,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	bypassCors: false,
 	queryStringValue: "",
 	queryStringKey: "",
-	imageCompressionMethod: ImageCompressionMethods.None,
-	tinyPngApiKey: "",
+	enableImageCompression: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -219,68 +209,15 @@ export default class S3UploaderPlugin extends Plugin {
 	}
 
 	async compressImage(file: File): Promise<ArrayBuffer> {
-		if (this.settings.imageCompressionMethod === ImageCompressionMethods.Local) {
-			file = await imageCompression(file, {
-				useWebWorker: false,
-			});
-		}
+		const compressedFile = await imageCompression(file, {
+			useWebWorker: false,
+		});
 
-		let fileBuffer = await file.arrayBuffer();
+		const fileBuffer = await compressedFile.arrayBuffer();
+		const originalSize = filesize(fileBuffer.byteLength);
+		const newSize = filesize(fileBuffer.byteLength);
 
-		const originalSize = fileBuffer.byteLength;
-
-		if (this.settings.imageCompressionMethod === ImageCompressionMethods.TinyPNG) {
-			// Require TinyPNG API key
-			if (!this.settings.tinyPngApiKey) {
-				throw new Error(
-					"TinyPNG API key is required for TinyPNG compression"
-				);
-			}
-
-			const tinyPngApiKey = this.settings.tinyPngApiKey;
-			const tinyPngUrl = `https://api.tinify.com/shrink`;
-			const tinyPngHeaders = {
-				Authorization: "Basic " + window.btoa("api:" + tinyPngApiKey),
-			};
-			const tinyPngResponse = await requestUrl({
-				url: tinyPngUrl,
-				method: "POST",
-				headers: tinyPngHeaders,
-				body: await file.arrayBuffer(),
-			});
-			if (tinyPngResponse.status !== 201) {
-				throw new Error(
-					`Error uploading image to TinyPNG: ${tinyPngResponse.status}`
-				);
-			}
-			const tinyPngOutputUrl =
-				tinyPngResponse.headers.location ||
-				tinyPngResponse.headers.Location;
-			if (
-				!tinyPngOutputUrl ||
-				tinyPngOutputUrl === "" ||
-				tinyPngOutputUrl.length === 0
-			) {
-				throw new Error(
-					`Error uploading image to TinyPNG: No output URL`
-				);
-			}
-			const tinyPngOutputResponse = await requestUrl(tinyPngOutputUrl);
-			if (tinyPngOutputResponse.status !== 200) {
-				throw new Error(
-					`Error uploading image to TinyPNG: ${tinyPngOutputResponse.status}`
-				);
-			}
-			fileBuffer = tinyPngOutputResponse.arrayBuffer;
-		}
-
-		const newSize = fileBuffer.byteLength;
-
-		new Notice(
-			`Image compressed from ${filesize(originalSize)} to ${filesize(
-				newSize
-			)}`
-		);
+		new Notice(`Image compressed from ${originalSize} to ${newSize}`);
 
 		return fileBuffer;
 	}
@@ -387,7 +324,7 @@ export default class S3UploaderPlugin extends Plugin {
 					let url;
 
 					// Image compression
-					if (thisType === "image") {
+					if (thisType === "image" && this.settings.enableImageCompression) {
 						buf = await this.compressImage(file);
 						file = new File([buf], newFileName, {
 							type: file.type,
@@ -857,32 +794,16 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					})
 			);
 
-			new Setting(containerEl)
-			.setName("Image Compression Method")
-			.setDesc("Select the method for image compression.")
-			.addDropdown((dropdown) => {
-				// Add options from the CompressionMethod enum
-				Object.values(ImageCompressionMethods).forEach((method) => {
-					dropdown.addOption(method, method);
-				});
-
-				dropdown
-					.setValue(this.plugin.settings.imageCompressionMethod)
-					.onChange(async (value: string) => {
-						this.plugin.settings.imageCompressionMethod = value;
-						await this.plugin.saveSettings();
-					});
-			});
-
 		new Setting(containerEl)
-			.setName("TinyPNG API Key")
-			.setDesc("API key for TinyPNG compression service.")
-			.addText((text) => {
-				wrapTextWithPasswordHide(text);
-				text.setPlaceholder("API Key")
-					.setValue(this.plugin.settings.tinyPngApiKey)
+			.setName("Enable Image Compression")
+			.setDesc(
+				"This will reduce the size of images before uploading."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.enableImageCompression)
 					.onChange(async (value) => {
-						this.plugin.settings.tinyPngApiKey = value.trim();
+						this.plugin.settings.enableImageCompression = value;
 						await this.plugin.saveSettings();
 					});
 			});
