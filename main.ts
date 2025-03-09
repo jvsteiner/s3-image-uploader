@@ -205,7 +205,7 @@ export default class S3UploaderPlugin extends Plugin {
 	}
 
 	async pasteHandler(
-		ev: ClipboardEvent | DragEvent | null,
+		ev: ClipboardEvent | DragEvent| Event | null,
 		editor: Editor,
 		directFile?: File
 	): Promise<void> {
@@ -242,6 +242,9 @@ export default class S3UploaderPlugin extends Plugin {
 					files = Array.from(
 						(ev as DragEvent).dataTransfer?.files || []
 					);
+					break;
+				case "input":
+					files = Array.from((ev.target as HTMLInputElement).files || []);
 					break;
 			}
 		}
@@ -398,6 +401,23 @@ export default class S3UploaderPlugin extends Plugin {
 				requestHandler: new ObsHttpHandler({ keepAlive: false }),
 			});
 		}
+
+		this.addCommand({
+			id: "upload-image",
+			name: "Upload image",
+			icon: "image-plus",
+			mobileOnly: false,
+			editorCallback: (editor) => {
+				const input = document.createElement("input");
+				input.type = "file";
+				input.oninput = (event) => {
+					if (!event.target) return;
+					this.pasteHandler(event, editor);
+				};
+				input.click();
+				input.remove(); // delete element
+			},
+		});
 
 		this.pasteFunction = (
 			event: ClipboardEvent | DragEvent,
