@@ -31,6 +31,8 @@
 		"@aws-sdk/protocol-http": "^3.310.0",
 		"@aws-sdk/querystring-builder": "^3.310.0",
 		"@aws-sdk/types": "^3.310.0",
-		"@smithy/fetch-http-handler": "^2.2.7"
+		"@smithy/fetch-http-handler": "^2.2.7",
+		"browser-image-compression": "^2.0.2",
+		"filesize": "^10.1.6"
 	}
 }

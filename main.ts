@@ -24,7 +24,9 @@ import {
 	FetchHttpHandlerOptions,
 } from "@smithy/fetch-http-handler";
 
+import { filesize } from "filesize";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import imageCompression from "browser-image-compression";
 
 // Remember to rename these classes and interfaces!!
 
@@ -34,6 +36,12 @@ interface pasteFunction {
 		event: ClipboardEvent | DragEvent,
 		editor: Editor
 	): void;
+}
+
+enum ImageCompressionMethods {
+	None = "none",
+	Local = "local",
+	TinyPNG = "tinypng",
 }
 
 interface S3UploaderSettings {
@@ -57,6 +65,10 @@ interface S3UploaderSettings {
 	bypassCors: boolean;
 	queryStringValue: string;
 	queryStringKey: string;
+
+	// Image Compression
+	imageCompressionMethod: string;
+	tinyPngApiKey: string;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -80,6 +92,8 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	bypassCors: false,
 	queryStringValue: "",
 	queryStringKey: "",
+	imageCompressionMethod: ImageCompressionMethods.None,
+	tinyPngApiKey: "",
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -204,6 +218,73 @@ export default class S3UploaderPlugin extends Plugin {
 		return urlString;
 	}
 
+	async compressImage(file: File): Promise<ArrayBuffer> {
+		if (this.settings.imageCompressionMethod === ImageCompressionMethods.Local) {
+			file = await imageCompression(file, {
+				useWebWorker: false,
+			});
+		}
+
+		let fileBuffer = await file.arrayBuffer();
+
+		const originalSize = fileBuffer.byteLength;
+
+		if (this.settings.imageCompressionMethod === ImageCompressionMethods.TinyPNG) {
+			// Require TinyPNG API key
+			if (!this.settings.tinyPngApiKey) {
+				throw new Error(
+					"TinyPNG API key is required for TinyPNG compression"
+				);
+			}
+
+			const tinyPngApiKey = this.settings.tinyPngApiKey;
+			const tinyPngUrl = `https://api.tinify.com/shrink`;
+			const tinyPngHeaders = {
+				Authorization: "Basic " + window.btoa("api:" + tinyPngApiKey),
+			};
+			const tinyPngResponse = await requestUrl({
+				url: tinyPngUrl,
+				method: "POST",
+				headers: tinyPngHeaders,
+				body: await file.arrayBuffer(),
+			});
+			if (tinyPngResponse.status !== 201) {
+				throw new Error(
+					`Error uploading image to TinyPNG: ${tinyPngResponse.status}`
+				);
+			}
+			const tinyPngOutputUrl =
+				tinyPngResponse.headers.location ||
+				tinyPngResponse.headers.Location;
+			if (
+				!tinyPngOutputUrl ||
+				tinyPngOutputUrl === "" ||
+				tinyPngOutputUrl.length === 0
+			) {
+				throw new Error(
+					`Error uploading image to TinyPNG: No output URL`
+				);
+			}
+			const tinyPngOutputResponse = await requestUrl(tinyPngOutputUrl);
+			if (tinyPngOutputResponse.status !== 200) {
+				throw new Error(
+					`Error uploading image to TinyPNG: ${tinyPngOutputResponse.status}`
+				);
+			}
+			fileBuffer = tinyPngOutputResponse.arrayBuffer;
+		}
+
+		const newSize = fileBuffer.byteLength;
+
+		new Notice(
+			`Image compressed from ${filesize(originalSize)} to ${filesize(
+				newSize
+			)}`
+		);
+
+		return fileBuffer;
+	}
+
 	async pasteHandler(
 		ev: ClipboardEvent | DragEvent | null,
 		editor: Editor,
@@ -275,7 +356,7 @@ export default class S3UploaderPlugin extends Plugin {
 				}
 
 				// Process the file
-				const buf = await file.arrayBuffer();
+				let buf = await file.arrayBuffer();
 				const digest = await generateFileHash(new Uint8Array(buf));
 				const newFileName = `${digest}.${file.name.split(".").pop()}`;
 
@@ -304,6 +385,15 @@ export default class S3UploaderPlugin extends Plugin {
 				try {
 					// Upload the file
 					let url;
+
+					// Image compression
+					if (thisType === "image") {
+						buf = await this.compressImage(file);
+						file = new File([buf], newFileName, {
+							type: file.type,
+						});
+					}
+					
 					if (!localUpload) {
 						url = await this.uploadFile(file, key);
 					} else {
@@ -370,8 +460,8 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings.imageUrlPath = this.settings.useCustomImageUrl
 			? this.settings.customImageUrl
 			: this.settings.forcePathStyle
-			? apiEndpoint + this.settings.bucket + "/"
-			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
+				? apiEndpoint + this.settings.bucket + "/"
+				: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 
 		if (this.settings.bypassCors) {
 			this.s3 = new S3Client({
@@ -457,7 +547,7 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 	}
 
-	onunload() {}
+	onunload() { }
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -766,6 +856,36 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+			new Setting(containerEl)
+			.setName("Image Compression Method")
+			.setDesc("Select the method for image compression.")
+			.addDropdown((dropdown) => {
+				// Add options from the CompressionMethod enum
+				Object.values(ImageCompressionMethods).forEach((method) => {
+					dropdown.addOption(method, method);
+				});
+
+				dropdown
+					.setValue(this.plugin.settings.imageCompressionMethod)
+					.onChange(async (value: string) => {
+						this.plugin.settings.imageCompressionMethod = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("TinyPNG API Key")
+			.setDesc("API key for TinyPNG compression service.")
+			.addText((text) => {
+				wrapTextWithPasswordHide(text);
+				text.setPlaceholder("API Key")
+					.setValue(this.plugin.settings.tinyPngApiKey)
+					.onChange(async (value) => {
+						this.plugin.settings.tinyPngApiKey = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }
 
@@ -860,9 +980,8 @@ class ObsHttpHandler extends FetchHttpHandler {
 		}
 
 		const { port, method } = request;
-		const url = `${request.protocol}//${request.hostname}${
-			port ? `:${port}` : ""
-		}${path}`;
+		const url = `${request.protocol}//${request.hostname}${port ? `:${port}` : ""
+			}${path}`;
 		const body =
 			method === "GET" || method === "HEAD" ? undefined : request.body;
 
