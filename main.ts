@@ -211,6 +211,9 @@ export default class S3UploaderPlugin extends Plugin {
 	async compressImage(file: File): Promise<ArrayBuffer> {
 		const compressedFile = await imageCompression(file, {
 			useWebWorker: false,
+			maxWidthOrHeight: 1920,
+			// maxSizeMB: 1,
+			initialQuality: 0.8,
 		});
 
 		const fileBuffer = await compressedFile.arrayBuffer();
