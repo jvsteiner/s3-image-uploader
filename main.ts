@@ -24,7 +24,9 @@ import {
 	FetchHttpHandlerOptions,
 } from "@smithy/fetch-http-handler";
 
+import { filesize } from "filesize";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import imageCompression from "browser-image-compression";
 
 // Remember to rename these classes and interfaces!!
 
@@ -57,6 +59,7 @@ interface S3UploaderSettings {
 	bypassCors: boolean;
 	queryStringValue: string;
 	queryStringKey: string;
+	enableImageCompression: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -80,6 +83,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	bypassCors: false,
 	queryStringValue: "",
 	queryStringKey: "",
+	enableImageCompression: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -204,6 +208,23 @@ export default class S3UploaderPlugin extends Plugin {
 		return urlString;
 	}
 
+	async compressImage(file: File): Promise<ArrayBuffer> {
+		const compressedFile = await imageCompression(file, {
+			useWebWorker: false,
+			maxWidthOrHeight: 1920,
+			// maxSizeMB: 1,
+			initialQuality: 0.8,
+		});
+
+		const fileBuffer = await compressedFile.arrayBuffer();
+		const originalSize = filesize(fileBuffer.byteLength);
+		const newSize = filesize(fileBuffer.byteLength);
+
+		new Notice(`Image compressed from ${originalSize} to ${newSize}`);
+
+		return fileBuffer;
+	}
+
 	async pasteHandler(
 		ev: ClipboardEvent | DragEvent| Event | null,
 		editor: Editor,
@@ -278,7 +299,7 @@ export default class S3UploaderPlugin extends Plugin {
 				}
 
 				// Process the file
-				const buf = await file.arrayBuffer();
+				let buf = await file.arrayBuffer();
 				const digest = await generateFileHash(new Uint8Array(buf));
 				const newFileName = `${digest}.${file.name.split(".").pop()}`;
 
@@ -307,6 +328,15 @@ export default class S3UploaderPlugin extends Plugin {
 				try {
 					// Upload the file
 					let url;
+
+					// Image compression
+					if (thisType === "image" && this.settings.enableImageCompression) {
+						buf = await this.compressImage(file);
+						file = new File([buf], newFileName, {
+							type: file.type,
+						});
+					}
+					
 					if (!localUpload) {
 						url = await this.uploadFile(file, key);
 					} else {
@@ -373,8 +403,8 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings.imageUrlPath = this.settings.useCustomImageUrl
 			? this.settings.customImageUrl
 			: this.settings.forcePathStyle
-			? apiEndpoint + this.settings.bucket + "/"
-			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
+				? apiEndpoint + this.settings.bucket + "/"
+				: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 
 		if (this.settings.bypassCors) {
 			this.s3 = new S3Client({
@@ -477,7 +507,7 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 	}
 
-	onunload() {}
+	onunload() { }
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -786,6 +816,20 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Enable Image Compression")
+			.setDesc(
+				"This will reduce the size of images before uploading."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.enableImageCompression)
+					.onChange(async (value) => {
+						this.plugin.settings.enableImageCompression = value;
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }
 
@@ -880,9 +924,8 @@ class ObsHttpHandler extends FetchHttpHandler {
 		}
 
 		const { port, method } = request;
-		const url = `${request.protocol}//${request.hostname}${
-			port ? `:${port}` : ""
-		}${path}`;
+		const url = `${request.protocol}//${request.hostname}${port ? `:${port}` : ""
+			}${path}`;
 		const body =
 			method === "GET" || method === "HEAD" ? undefined : request.body;
 
