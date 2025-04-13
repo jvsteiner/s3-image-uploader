@@ -60,6 +60,9 @@ interface S3UploaderSettings {
 	queryStringValue: string;
 	queryStringKey: string;
 	enableImageCompression: boolean;
+	maxImageCompressionSize: number;
+	imageCompressionQuality: number;
+	maxImageWidthOrHeight: number;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -84,6 +87,9 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	queryStringValue: "",
 	queryStringKey: "",
 	enableImageCompression: false,
+	maxImageCompressionSize: 1,
+	imageCompressionQuality: 0.7,
+	maxImageWidthOrHeight: 4096,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -211,11 +217,9 @@ export default class S3UploaderPlugin extends Plugin {
 	async compressImage(file: File): Promise<ArrayBuffer> {
 		const compressedFile = await imageCompression(file, {
 			useWebWorker: false,
-			maxWidthOrHeight: 4096,
-			maxSizeMB: 1,
-			initialQuality: 0.7,
-			alwaysKeepResolution: false,
-			preserveExif: false,
+			maxWidthOrHeight: this.settings.maxImageWidthOrHeight,
+			maxSizeMB: this.settings.maxImageCompressionSize,
+			initialQuality: this.settings.imageCompressionQuality,
 		});
 
 		const fileBuffer = await compressedFile.arrayBuffer();
@@ -228,7 +232,7 @@ export default class S3UploaderPlugin extends Plugin {
 	}
 
 	async pasteHandler(
-		ev: ClipboardEvent | DragEvent| Event | null,
+		ev: ClipboardEvent | DragEvent | Event | null,
 		editor: Editor,
 		directFile?: File
 	): Promise<void> {
@@ -828,10 +832,85 @@ class S3UploaderSettingTab extends PluginSettingTab {
 				toggle
 					.setValue(this.plugin.settings.enableImageCompression)
 					.onChange(async (value) => {
+						if (value) {
+							new Notice(
+								"Image compression is enabled. Re-open the settings page to configure."
+							);
+						}
+
 						this.plugin.settings.enableImageCompression = value;
 						await this.plugin.saveSettings();
 					});
 			});
+
+		if (this.plugin.settings.enableImageCompression) {
+			new Setting(containerEl)
+				.setName("Max Image Compression Size")
+				.setDesc(
+					"Maximum size of the image after compression in MB. Default is 1MB."
+				)
+				.addText((text) =>
+					text
+						.setPlaceholder("1")
+						.setValue(
+							this.plugin.settings.maxImageCompressionSize.toString()
+						)
+						.onChange(async (value) => {
+							// It must be a number, it must be greater than 0
+							const newValue = parseFloat(value)
+							if (isNaN(newValue) || newValue <= 0) {
+								new Notice(
+									"Max Image Compression Size must be a number greater than 0"
+								);
+								return;
+							}
+
+							this.plugin.settings.maxImageCompressionSize = newValue;
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName("Max Image Compression Quality")
+				.setDesc(
+					"Maximum quality of the image after compression. Default is 0.7."
+				)
+				.addSlider((slider) => {
+					slider.setDynamicTooltip();
+					slider.setLimits(0.0, 1.0, 0.05);
+					slider.setValue(this.plugin.settings.imageCompressionQuality)
+					slider.onChange(async (value) => {
+						this.plugin.settings.imageCompressionQuality = value;
+						await this.plugin.saveSettings();
+					});
+				});
+
+			new Setting(containerEl)
+				.setName("Max Image Width or Height")
+				.setDesc(
+					"Maximum width or height of the image after compression. Default is 4096px."
+				)
+				.addText((text) =>
+					text
+						.setPlaceholder("4096")
+						.setValue(
+							this.plugin.settings.maxImageWidthOrHeight.toString()
+						)
+						.onChange(async (value) => {
+							const parsedValue = parseInt(value);
+
+							if (isNaN(parsedValue) || parsedValue <= 0) {
+								new Notice(
+									"Max Image Width or Height must be a number greater than 0"
+								);
+								return;
+							}
+
+							this.plugin.settings.maxImageWidthOrHeight = parsedValue;
+							await this.plugin.saveSettings();
+						})
+				);
+		}
 	}
 }
 
