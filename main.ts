@@ -6,7 +6,6 @@ import {
 	PluginSettingTab,
 	Setting,
 	TextComponent,
-	EditorPosition,
 	setIcon,
 	FileSystemAdapter,
 	RequestUrlParam,
@@ -202,7 +201,7 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 		let urlString = this.settings.imageUrlPath + key;
 		if (this.settings.queryStringKey && this.settings.queryStringValue) {
-			let urlObject = new URL(urlString);
+			const urlObject = new URL(urlString);
 
 			// The searchParams property provides methods to manipulate query parameters
 			urlObject.searchParams.append(
@@ -403,7 +402,7 @@ export default class S3UploaderPlugin extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new S3UploaderSettingTab(this.app, this));
 
-		let apiEndpoint = this.settings.useCustomEndpoint
+		const apiEndpoint = this.settings.useCustomEndpoint
 			? this.settings.customEndpoint
 			: `https://s3.${this.settings.region}.amazonaws.com/`;
 		this.settings.imageUrlPath = this.settings.useCustomImageUrl
@@ -530,10 +529,27 @@ export default class S3UploaderPlugin extends Plugin {
 
 class S3UploaderSettingTab extends PluginSettingTab {
 	plugin: S3UploaderPlugin;
+	// Add properties to store compression setting elements
+	private compressionSizeSettings: Setting;
+	private compressionQualitySettings: Setting;
+	private compressionDimensionSettings: Setting;
 
 	constructor(app: App, plugin: S3UploaderPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	/**
+	 * Toggle visibility of compression settings
+	 * @param show Whether to show the compression settings
+	 */
+	private toggleCompressionSettings(show: boolean): void {
+		if (this.compressionSizeSettings && this.compressionQualitySettings && this.compressionDimensionSettings) {
+			const displayStyle = show ? "" : "none";
+			this.compressionSizeSettings.settingEl.style.display = displayStyle;
+			this.compressionQualitySettings.settingEl.style.display = displayStyle;
+			this.compressionDimensionSettings.settingEl.style.display = displayStyle;
+		}
 	}
 
 	display(): void {
@@ -731,10 +747,10 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.setPlaceholder("https://s3.myhost.com/")
 					.setValue(this.plugin.settings.customEndpoint)
 					.onChange(async (value) => {
-						value = value.match(/https?:\/\//) // Force to start http(s)://
+						value = value.match(/^https?:\/\//) // Force to start http(s)://
 							? value
 							: "https://" + value;
-						value = value.replace(/([^\/])$/, "$1/"); // Force to end with slash
+						value = value.replace(/([^/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customEndpoint = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -775,10 +791,10 @@ class S3UploaderSettingTab extends PluginSettingTab {
 				text
 					.setValue(this.plugin.settings.customImageUrl)
 					.onChange(async (value) => {
-						value = value.match(/https?:\/\//) // Force to start http(s)://
+						value = value.match(/^https?:\/\//) // Force to start http(s)://
 							? value
 							: "https://" + value;
-						value = value.replace(/([^\/])$/, "$1/"); // Force to end with slash
+						value = value.replace(/([^/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customImageUrl = value.trim();
 						await this.plugin.saveSettings();
 					})
@@ -832,85 +848,84 @@ class S3UploaderSettingTab extends PluginSettingTab {
 				toggle
 					.setValue(this.plugin.settings.enableImageCompression)
 					.onChange(async (value) => {
-						if (value) {
-							new Notice(
-								"Image compression is enabled. Re-open the settings page to configure."
-							);
-						}
-
 						this.plugin.settings.enableImageCompression = value;
 						await this.plugin.saveSettings();
+						
+						// Show or hide compression settings based on toggle value
+						this.toggleCompressionSettings(value);
 					});
 			});
 
-		if (this.plugin.settings.enableImageCompression) {
-			new Setting(containerEl)
-				.setName("Max Image Compression Size")
-				.setDesc(
-					"Maximum size of the image after compression in MB. Default is 1MB."
-				)
-				.addText((text) =>
-					text
-						.setPlaceholder("1")
-						.setValue(
-							this.plugin.settings.maxImageCompressionSize.toString()
-						)
-						.onChange(async (value) => {
-							// It must be a number, it must be greater than 0
-							const newValue = parseFloat(value)
-							if (isNaN(newValue) || newValue <= 0) {
-								new Notice(
-									"Max Image Compression Size must be a number greater than 0"
-								);
-								return;
-							}
+		// Always create the compression settings, but control visibility
+		this.compressionSizeSettings = new Setting(containerEl)
+			.setName("Max Image Compression Size")
+			.setDesc(
+				"Maximum size of the image after compression in MB. Default is 1MB."
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("1")
+					.setValue(
+						this.plugin.settings.maxImageCompressionSize.toString()
+					)
+					.onChange(async (value) => {
+						// It must be a number, it must be greater than 0
+						const newValue = parseFloat(value)
+						if (isNaN(newValue) || newValue <= 0) {
+							new Notice(
+								"Max Image Compression Size must be a number greater than 0"
+							);
+							return;
+						}
 
-							this.plugin.settings.maxImageCompressionSize = newValue;
-							await this.plugin.saveSettings();
-						})
-				);
-
-			new Setting(containerEl)
-				.setName("Max Image Compression Quality")
-				.setDesc(
-					"Maximum quality of the image after compression. Default is 0.7."
-				)
-				.addSlider((slider) => {
-					slider.setDynamicTooltip();
-					slider.setLimits(0.0, 1.0, 0.05);
-					slider.setValue(this.plugin.settings.imageCompressionQuality)
-					slider.onChange(async (value) => {
-						this.plugin.settings.imageCompressionQuality = value;
+						this.plugin.settings.maxImageCompressionSize = newValue;
 						await this.plugin.saveSettings();
-					});
+					})
+			);
+
+		this.compressionQualitySettings = new Setting(containerEl)
+			.setName("Max Image Compression Quality")
+			.setDesc(
+				"Maximum quality of the image after compression. Default is 0.7."
+			)
+			.addSlider((slider) => {
+				slider.setDynamicTooltip();
+				slider.setLimits(0.0, 1.0, 0.05);
+				slider.setValue(this.plugin.settings.imageCompressionQuality)
+				slider.onChange(async (value) => {
+					this.plugin.settings.imageCompressionQuality = value;
+					await this.plugin.saveSettings();
 				});
+			});
 
-			new Setting(containerEl)
-				.setName("Max Image Width or Height")
-				.setDesc(
-					"Maximum width or height of the image after compression. Default is 4096px."
-				)
-				.addText((text) =>
-					text
-						.setPlaceholder("4096")
-						.setValue(
-							this.plugin.settings.maxImageWidthOrHeight.toString()
-						)
-						.onChange(async (value) => {
-							const parsedValue = parseInt(value);
+		this.compressionDimensionSettings = new Setting(containerEl)
+			.setName("Max Image Width or Height")
+			.setDesc(
+				"Maximum width or height of the image after compression. Default is 4096px."
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("4096")
+					.setValue(
+						this.plugin.settings.maxImageWidthOrHeight.toString()
+					)
+					.onChange(async (value) => {
+						const parsedValue = parseInt(value);
 
-							if (isNaN(parsedValue) || parsedValue <= 0) {
-								new Notice(
-									"Max Image Width or Height must be a number greater than 0"
-								);
-								return;
-							}
+						if (isNaN(parsedValue) || parsedValue <= 0) {
+							new Notice(
+								"Max Image Width or Height must be a number greater than 0"
+							);
+							return;
+						}
 
-							this.plugin.settings.maxImageWidthOrHeight = parsedValue;
-							await this.plugin.saveSettings();
-						})
-				);
-		}
+						this.plugin.settings.maxImageWidthOrHeight = parsedValue;
+						await this.plugin.saveSettings();
+					})
+			);
+			
+		// Set initial visibility based on current settings
+		this.toggleCompressionSettings(this.plugin.settings.enableImageCompression);
 	}
 }
 
@@ -1024,7 +1039,7 @@ class ObsHttpHandler extends FetchHttpHandler {
 			contentType = transformedHeaders["content-type"];
 		}
 
-		let transformedBody: any = body;
+		let transformedBody: string | ArrayBuffer | undefined = body;
 		if (ArrayBuffer.isView(body)) {
 			transformedBody = bufferToArrayBuffer(body);
 		}
