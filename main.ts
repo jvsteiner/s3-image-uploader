@@ -33,7 +33,7 @@ interface pasteFunction {
 	(
 		this: HTMLElement,
 		event: ClipboardEvent | DragEvent,
-		editor: Editor,
+		editor: Editor
 	): void;
 }
 
@@ -99,7 +99,7 @@ export default class S3UploaderPlugin extends Plugin {
 	private async replaceText(
 		editor: Editor,
 		target: string,
-		replacement: string,
+		replacement: string
 	): Promise<void> {
 		const content = editor.getValue();
 		const position = content.indexOf(target);
@@ -112,11 +112,11 @@ export default class S3UploaderPlugin extends Plugin {
 			// Check if we're in a table by looking for pipe characters around the target
 			const surroundingBefore = content.substring(
 				Math.max(0, position - 20),
-				position,
+				position
 			);
 			const surroundingAfter = content.substring(
 				position + target.length,
-				Math.min(content.length, position + target.length + 20),
+				Math.min(content.length, position + target.length + 20)
 			);
 
 			console.log("Surrounding text:", {
@@ -197,7 +197,7 @@ export default class S3UploaderPlugin extends Plugin {
 				Key: key,
 				Body: new Uint8Array(buf),
 				ContentType: file.type,
-			}),
+			})
 		);
 		let urlString = this.settings.imageUrlPath + key;
 		if (this.settings.queryStringKey && this.settings.queryStringValue) {
@@ -206,7 +206,7 @@ export default class S3UploaderPlugin extends Plugin {
 			// The searchParams property provides methods to manipulate query parameters
 			urlObject.searchParams.append(
 				this.settings.queryStringKey,
-				this.settings.queryStringValue,
+				this.settings.queryStringValue
 			);
 			urlString = urlObject.toString();
 		}
@@ -233,7 +233,7 @@ export default class S3UploaderPlugin extends Plugin {
 	async pasteHandler(
 		ev: ClipboardEvent | DragEvent | Event | null,
 		editor: Editor,
-		directFile?: File,
+		directFile?: File
 	): Promise<void> {
 		if (ev?.defaultPrevented) {
 			return;
@@ -255,7 +255,7 @@ export default class S3UploaderPlugin extends Plugin {
 			switch (ev.type) {
 				case "paste":
 					files = Array.from(
-						(ev as ClipboardEvent).clipboardData?.files || [],
+						(ev as ClipboardEvent).clipboardData?.files || []
 					);
 					break;
 				case "drop":
@@ -266,12 +266,12 @@ export default class S3UploaderPlugin extends Plugin {
 						return;
 					}
 					files = Array.from(
-						(ev as DragEvent).dataTransfer?.files || [],
+						(ev as DragEvent).dataTransfer?.files || []
 					);
 					break;
 				case "input":
 					files = Array.from(
-						(ev.target as HTMLInputElement).files || [],
+						(ev.target as HTMLInputElement).files || []
 					);
 					break;
 			}
@@ -324,11 +324,11 @@ export default class S3UploaderPlugin extends Plugin {
 					.replace("${year}", currentDate.getFullYear().toString())
 					.replace(
 						"${month}",
-						String(currentDate.getMonth() + 1).padStart(2, "0"),
+						String(currentDate.getMonth() + 1).padStart(2, "0")
 					)
 					.replace(
 						"${day}",
-						String(currentDate.getDate()).padStart(2, "0"),
+						String(currentDate.getDate()).padStart(2, "0")
 					);
 				const key = folder ? `${folder}/${newFileName}` : newFileName;
 
@@ -352,7 +352,7 @@ export default class S3UploaderPlugin extends Plugin {
 					} else {
 						await this.app.vault.adapter.writeBinary(
 							key,
-							new Uint8Array(buf),
+							new Uint8Array(buf)
 						);
 						url =
 							this.app.vault.adapter instanceof FileSystemAdapter
@@ -374,7 +374,7 @@ export default class S3UploaderPlugin extends Plugin {
 
 				// Filter out undefined results (from unsupported file types)
 				const validResults = results.filter(
-					(result) => result !== undefined,
+					(result) => result !== undefined
 				);
 
 				// Insert all results at once at the cursor position
@@ -413,8 +413,8 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings.imageUrlPath = this.settings.useCustomImageUrl
 			? this.settings.customImageUrl
 			: this.settings.forcePathStyle
-				? apiEndpoint + this.settings.bucket + "/"
-				: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
+			? apiEndpoint + this.settings.bucket + "/"
+			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 
 		if (this.settings.bypassCors) {
 			this.s3 = new S3Client({
@@ -461,16 +461,16 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.pasteFunction = (
 			event: ClipboardEvent | DragEvent,
-			editor: Editor,
+			editor: Editor
 		) => {
 			this.pasteHandler(event, editor);
 		};
 
 		this.registerEvent(
-			this.app.workspace.on("editor-paste", this.pasteFunction),
+			this.app.workspace.on("editor-paste", this.pasteFunction)
 		);
 		this.registerEvent(
-			this.app.workspace.on("editor-drop", this.pasteFunction),
+			this.app.workspace.on("editor-drop", this.pasteFunction)
 		);
 		// Add mobile-specific event monitoring
 		this.registerEvent(
@@ -497,14 +497,17 @@ export default class S3UploaderPlugin extends Plugin {
 					// Now remove the original link if it exists
 					const content = activeView.editor.getValue();
 					// Check if the "Use [[Wikilinks]]" option is disabled
-					const obsidianLink = this.app.vault.getConfig('useMarkdownLinks')
-						? `![](${file.name})` : `![[${file.name}]]`; // Exact pattern we want to find
+					const obsidianLink = (this.app.vault as any).getConfig(
+						"useMarkdownLinks"
+					)
+						? `![](${file.name})`
+						: `![[${file.name}]]`; // Exact pattern we want to find
 					const position = content.indexOf(obsidianLink);
 
 					if (position !== -1) {
 						const from = activeView.editor.offsetToPos(position);
 						const to = activeView.editor.offsetToPos(
-							position + obsidianLink.length,
+							position + obsidianLink.length
 						);
 						activeView.editor.replaceRange("", from, to);
 					} else {
@@ -515,7 +518,7 @@ export default class S3UploaderPlugin extends Plugin {
 				} catch (error) {
 					new Notice(`Error processing file: ${error.message}`);
 				}
-			}),
+			})
 		);
 	}
 
@@ -525,7 +528,7 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings = Object.assign(
 			{},
 			DEFAULT_SETTINGS,
-			await this.loadData(),
+			await this.loadData()
 		);
 	}
 
@@ -622,7 +625,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.region = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
@@ -635,13 +638,13 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.bucket = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
 			.setName("Bucket folder")
 			.setDesc(
-				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables.",
+				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables."
 			)
 			.addText((text) =>
 				text
@@ -650,13 +653,13 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.folder = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
 			.setName("Upload on drag")
 			.setDesc(
-				"Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note.",
+				"Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -670,7 +673,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Upload video files")
 			.setDesc(
-				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note.",
+				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -684,7 +687,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Upload audio files")
 			.setDesc(
-				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note.",
+				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -698,7 +701,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Upload pdf files")
 			.setDesc(
-				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files.",
+				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -712,7 +715,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Copy to local folder")
 			.setDesc(
-				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3.",
+				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -726,7 +729,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Local folder")
 			.setDesc(
-				'Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note.  This affects only local uploads.',
+				'Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note.  This affects only local uploads.'
 			)
 			.addText((text) =>
 				text
@@ -735,7 +738,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.localUploadFolder = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
@@ -753,7 +756,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Custom S3 Endpoint")
 			.setDesc(
-				"Optionally set a custom endpoint for any S3 compatible storage provider.",
+				"Optionally set a custom endpoint for any S3 compatible storage provider."
 			)
 			.addText((text) =>
 				text
@@ -766,13 +769,13 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						value = value.replace(/([^/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customEndpoint = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
 			.setName("S3 Path Style URLs")
 			.setDesc(
-				"Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).",
+				"Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com)."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -798,7 +801,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Custom Image URL")
 			.setDesc(
-				"Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.",
+				"Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN."
 			)
 			.addText((text) =>
 				text
@@ -810,13 +813,13 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						value = value.replace(/([^/])$/, "$1/"); // Force to end with slash
 						this.plugin.settings.customImageUrl = value.trim();
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
 			.setName("Bypass local CORS check")
 			.setDesc(
-				"Bypass local CORS preflight checks - it might work on later versions of Obsidian.",
+				"Bypass local CORS preflight checks - it might work on later versions of Obsidian."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -836,7 +839,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.queryStringKey = value;
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
@@ -849,7 +852,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.queryStringValue = value;
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		new Setting(containerEl)
@@ -871,33 +874,33 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		this.compressionSizeSettings = new Setting(containerEl)
 			.setName("Max Image Size")
 			.setDesc(
-				"Maximum size of the image after compression in MB. Default is 1MB.",
+				"Maximum size of the image after compression in MB. Default is 1MB."
 			)
 			.addText((text) =>
 				text
 					.setPlaceholder("1")
 					.setValue(
-						this.plugin.settings.maxImageCompressionSize.toString(),
+						this.plugin.settings.maxImageCompressionSize.toString()
 					)
 					.onChange(async (value) => {
 						// It must be a number, it must be greater than 0
 						const newValue = parseFloat(value);
 						if (isNaN(newValue) || newValue <= 0) {
 							new Notice(
-								"Max Image Compression Size must be a number greater than 0",
+								"Max Image Compression Size must be a number greater than 0"
 							);
 							return;
 						}
 
 						this.plugin.settings.maxImageCompressionSize = newValue;
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		this.compressionQualitySettings = new Setting(containerEl)
 			.setName("Image Compression Quality")
 			.setDesc(
-				"Maximum quality of the image after compression. Default is 0.7.",
+				"Maximum quality of the image after compression. Default is 0.7."
 			)
 			.addSlider((slider) => {
 				slider.setDynamicTooltip();
@@ -912,20 +915,20 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		this.compressionDimensionSettings = new Setting(containerEl)
 			.setName("Max Image Width or Height")
 			.setDesc(
-				"Maximum width or height of the image after compression. Default is 4096px.",
+				"Maximum width or height of the image after compression. Default is 4096px."
 			)
 			.addText((text) =>
 				text
 					.setPlaceholder("4096")
 					.setValue(
-						this.plugin.settings.maxImageWidthOrHeight.toString(),
+						this.plugin.settings.maxImageWidthOrHeight.toString()
 					)
 					.onChange(async (value) => {
 						const parsedValue = parseInt(value);
 
 						if (isNaN(parsedValue) || parsedValue <= 0) {
 							new Notice(
-								"Max Image Width or Height must be a number greater than 0",
+								"Max Image Width or Height must be a number greater than 0"
 							);
 							return;
 						}
@@ -933,12 +936,12 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						this.plugin.settings.maxImageWidthOrHeight =
 							parsedValue;
 						await this.plugin.saveSettings();
-					}),
+					})
 			);
 
 		// Set initial visibility based on current settings
 		this.toggleCompressionSettings(
-			this.plugin.settings.enableImageCompression,
+			this.plugin.settings.enableImageCompression
 		);
 	}
 }
@@ -946,7 +949,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 const wrapTextWithPasswordHide = (text: TextComponent) => {
 	const hider = text.inputEl.insertAdjacentElement(
 		"beforebegin",
-		createSpan(),
+		createSpan()
 	);
 	if (!hider) {
 		return;
@@ -971,7 +974,7 @@ const wrapTextWithPasswordHide = (text: TextComponent) => {
 const wrapFileDependingOnType = (
 	location: string,
 	type: string,
-	localBase: string,
+	localBase: string
 ) => {
 	const srcPrefix = localBase ? "file://" + localBase + "/" : "";
 
@@ -1017,7 +1020,7 @@ class ObsHttpHandler extends FetchHttpHandler {
 	}
 	async handle(
 		request: HttpRequest,
-		{ abortSignal }: HttpHandlerOptions = {},
+		{ abortSignal }: HttpHandlerOptions = {}
 	): Promise<{ response: HttpResponse }> {
 		if (abortSignal?.aborted) {
 			const abortError = new Error("Request aborted");
@@ -1099,7 +1102,7 @@ class ObsHttpHandler extends FetchHttpHandler {
 						abortError.name = "AbortError";
 						reject(abortError);
 					};
-				}),
+				})
 			);
 		}
 		return Promise.race(raceOfPromises);
