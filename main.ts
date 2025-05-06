@@ -496,7 +496,9 @@ export default class S3UploaderPlugin extends Plugin {
 
 					// Now remove the original link if it exists
 					const content = activeView.editor.getValue();
-					const obsidianLink = `![[${file.name}]]`; // Exact pattern we want to find
+					// Check if the "Use [[Wikilinks]]" option is disabled
+					const obsidianLink = this.app.vault.getConfig('useMarkdownLinks')
+						? `![](${file.name})` : `![[${file.name}]]`; // Exact pattern we want to find
 					const position = content.indexOf(obsidianLink);
 
 					if (position !== -1) {
