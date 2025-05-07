@@ -100,3 +100,5 @@ Upload the files manifest.json, main.js, styles.css as binary attachments. Note:
 Publish the release.
 
 > You can simplify the version bump process by running npm version patch, npm version minor or npm version major after updating minAppVersion manually in manifest.json. The command will bump version in manifest.json and package.json, and add the entry for the new version to versions.json
+
+npm version patch
