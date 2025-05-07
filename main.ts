@@ -504,7 +504,7 @@ export default class S3UploaderPlugin extends Plugin {
 					const obsidianLink = (this.app.vault as any).getConfig(
 						"useMarkdownLinks"
 					)
-						? `![](${file.name})`
+						? `![](${file.name.split(" ").join("%20")})`
 						: `![[${file.name}]]`; // Exact pattern we want to find
 					const position = content.indexOf(obsidianLink);
 
