@@ -446,6 +446,20 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.createS3Client();
 
+		// Add command to replace wiki links with S3 URLs
+		this.addCommand({
+			id: "replace-wiki-links-with-s3",
+			name: "Replace wiki links with S3 URL",
+			callback: async () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile && activeFile.extension === "md") {
+					await this.processDownloadedImages(activeFile);
+				} else {
+					new Notice("No active markdown file");
+				}
+			}
+		});
+
 		this.addCommand({
 			id: "upload-image",
 			name: "Upload image",
@@ -538,6 +552,174 @@ export default class S3UploaderPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/**
+	 * Process downloaded images in a file, replacing them with S3 links
+	 * This function is meant to be used after "Download attachments for current file" Obsidian command
+	 * It identifies wiki links and replaces them with corresponding S3 links, then removes duplicate S3 links
+	 */
+	async processDownloadedImages(file: TFile): Promise<void> {
+		try {
+			// Get the content of the file
+			const content = await this.app.vault.read(file);
+
+			// Get editor for this file
+			let editor: Editor | null = null;
+
+			// Try to find an open editor for this file
+			const leaves = this.app.workspace.getLeavesOfType("markdown");
+			for (const leaf of leaves) {
+				const view = leaf.view as MarkdownView;
+				if (view.file && view.file.path === file.path) {
+					editor = view.editor;
+					break;
+				}
+			}
+
+			// If no editor is found but we have an active editor, check if it's for the right file
+			if (!editor) {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView && activeView.file && activeView.file.path === file.path) {
+					editor = activeView.editor;
+				}
+			}
+
+			// Still no editor, we'll have to use file operations instead
+			if (!editor) {
+				new Notice("No editor found for this file, changes will be saved directly");
+				return; // Exit if no editor found
+			}
+
+			// Find all wiki links in the file
+			const wikiLinkRegex = /!\[\[(.*?)(?:\|(.*?))?\]\]/g;
+			const wikiMatches = [...content.matchAll(wikiLinkRegex)];
+
+			if (wikiMatches.length === 0) {
+				new Notice("No wiki links found in the document");
+				return;
+			}
+
+			// Find all S3 links in the file
+			const s3LinkRegex = /!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+			const allS3Matches = [...content.matchAll(s3LinkRegex)];
+
+			if (allS3Matches.length === 0) {
+				new Notice("No S3 links found. Please process images manually.");
+				return;
+			}
+
+			// Find groups of consecutive S3 links
+			const s3Groups: { start: number, end: number, count: number, text: string, links: RegExpMatchArray[] }[] = [];
+			let currentGroup = { start: -1, end: -1, count: 0, text: "", links: [] as RegExpMatchArray[] };
+
+			// Analyze each line to identify groups of consecutive S3 links
+			const lines = content.split("\n");
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i];
+				const s3LinksInLine = [...line.matchAll(s3LinkRegex)];
+
+				if (s3LinksInLine.length > 0) {
+					// Start a new group or extend existing group
+					if (currentGroup.start === -1) {
+						currentGroup = {
+							start: i,
+							end: i,
+							count: s3LinksInLine.length,
+							text: line,
+							links: [...s3LinksInLine]
+						};
+					} else {
+						currentGroup.end = i;
+						currentGroup.count += s3LinksInLine.length;
+						currentGroup.text += "\n" + line;
+						currentGroup.links.push(...s3LinksInLine);
+					}
+				} else if (currentGroup.start !== -1) {
+					// End the group and save it
+					s3Groups.push({ ...currentGroup });
+					currentGroup = { start: -1, end: -1, count: 0, text: "", links: [] };
+				}
+			}
+
+			// Save the last group if exists
+			if (currentGroup.start !== -1) {
+				s3Groups.push({ ...currentGroup });
+			}
+
+			// Find the group with the most S3 links
+			if (s3Groups.length === 0) {
+				new Notice("No consecutive groups of S3 links found");
+				return;
+			}
+
+			// Identify the group with the most S3 links
+			const largestGroup = s3Groups.reduce((max, group) =>
+				group.count > max.count ? group : max, s3Groups[0]);
+
+			// Check if the number of wiki links matches the number of S3 links
+			if (largestGroup.count !== wikiMatches.length) {
+				new Notice(`Number of wiki links (${wikiMatches.length}) doesn't match S3 links (${largestGroup.count})`);
+				return;
+			}
+
+			// Extract S3 links from the largest group
+			const s3LinksInLargestGroup = largestGroup.links;
+
+			// Reverse S3 links to match wiki links in correct order
+			const reversedS3Links = [...s3LinksInLargestGroup].reverse();
+
+			// Save cursor position
+			const cursorPos = editor.getCursor();
+
+			// Replace wiki links with corresponding S3 links
+			let processedCount = 0;
+			for (let i = 0; i < wikiMatches.length; i++) {
+				const wikiMatch = wikiMatches[i];
+				const s3Match = reversedS3Links[i];
+
+				const wikiLink = wikiMatch[0]; // ![[filename|title]]
+				const s3Link = s3Match[0];    // ![title](https://...)
+
+				// Replace in editor
+				await this.replaceText(editor, wikiLink, s3Link);
+				processedCount++;
+			}
+
+			// Remove duplicate S3 links from the largest group
+			if (processedCount > 0) {
+				// Process each line in the group
+				for (let lineIndex = largestGroup.start; lineIndex <= largestGroup.end; lineIndex++) {
+					// Get current line (after wiki link replacement)
+					const currentLine = editor.getLine(lineIndex);
+
+					// Find S3 links in the line
+					const s3LinksInLine = [...currentLine.matchAll(s3LinkRegex)];
+
+					if (s3LinksInLine.length > 0) {
+						// Create a line with S3 links removed
+						let updatedLine = currentLine;
+						for (const s3Link of s3LinksInLine) {
+							updatedLine = updatedLine.replace(s3Link[0], "");
+						}
+
+						// Replace the line
+						const lineStart = { line: lineIndex, ch: 0 };
+						const lineEnd = { line: lineIndex, ch: currentLine.length };
+						editor.replaceRange(updatedLine, lineStart, lineEnd);
+					}
+				}
+
+				// Restore cursor position
+				editor.setCursor(cursorPos);
+
+				new Notice(`Replaced ${processedCount} wiki links with S3 links and removed duplicates`);
+			}
+
+		} catch (error) {
+			console.error("Error in processDownloadedImages:", error);
+			new Notice(`Error processing images: ${error.message}`);
+		}
 	}
 }
 
