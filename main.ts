@@ -701,26 +701,29 @@ export default class S3UploaderPlugin extends Plugin {
 			// Save cursor position
 			const cursorPos = editor.getCursor();
 
-			// Map to track wiki links by ALT text
-			const wikiLinksByAlt = new Map<string, string[]>();
+			// Map to track wiki links by ALT text hash part (without extension)
+			const wikiLinksByAltHash = new Map<string, { wikiLinks: string[], altText: string }>();
 
-			// Group wiki links by ALT text
+			// Group wiki links by ALT text hash part
 			for (const wikiMatch of wikiLinksWithAlt) {
 				const wikiLink = wikiMatch[0]; // Complete wiki link: ![[filename|alt]]
 				const altText = wikiMatch[2]; // ALT text
 
-				if (!wikiLinksByAlt.has(altText)) {
-					wikiLinksByAlt.set(altText, []);
-				}
-				wikiLinksByAlt.get(altText)?.push(wikiLink);
+				// Extract hash part from ALT text (assuming format is hash.extension or just hash)
+				const hashPart = altText.includes('.') ? altText.substring(0, altText.indexOf('.')) : altText;
 
-				console.log(`Grouped wiki link: ${wikiLink} with alt: ${altText}`);
+				if (!wikiLinksByAltHash.has(hashPart)) {
+					wikiLinksByAltHash.set(hashPart, { wikiLinks: [], altText: altText });
+				}
+				wikiLinksByAltHash.get(hashPart)?.wikiLinks.push(wikiLink);
+
+				console.log(`Grouped wiki link: ${wikiLink} with hash part: ${hashPart} (full alt: ${altText})`);
 			}
 
-			// Map to store S3 links by ALT text (filename)
-			const s3LinksByFilename = new Map<string, string>();
+			// Map to store S3 links by filename hash part
+			const s3LinksByFilenameHash = new Map<string, string>();
 
-			// Find S3 links matching ALT texts
+			// Find S3 links matching ALT texts by hash part
 			for (const s3Match of allS3Matches) {
 				const s3Link = s3Match[0]; // Complete S3 link: ![alt](url)
 				const s3Url = s3Match[2]; // URL from S3 link
@@ -728,10 +731,13 @@ export default class S3UploaderPlugin extends Plugin {
 				// Extract the filename part from the URL
 				const urlFilename = s3Url.substring(s3Url.lastIndexOf('/') + 1);
 
-				// Store S3 link by filename
-				s3LinksByFilename.set(urlFilename, s3Link);
+				// Extract hash part from filename (assuming format is hash.extension)
+				const hashPart = urlFilename.includes('.') ? urlFilename.substring(0, urlFilename.indexOf('.')) : urlFilename;
 
-				console.log(`Matched S3 link: ${s3Link} with filename: ${urlFilename}`);
+				// Store S3 link by hash part
+				s3LinksByFilenameHash.set(hashPart, s3Link);
+
+				console.log(`Matched S3 link: ${s3Link} with filename hash: ${hashPart} (full filename: ${urlFilename})`);
 			}
 
 			// List to keep track of which S3 links to remove
@@ -742,16 +748,16 @@ export default class S3UploaderPlugin extends Plugin {
 			const updatedContent = editor.getValue();
 			let newContent = updatedContent;
 
-			// Process each group of wiki links with the same ALT text
-			for (const [altText, wikiLinks] of wikiLinksByAlt.entries()) {
-				// Find matching S3 link for this ALT text
-				const matchingS3Link = s3LinksByFilename.get(altText);
+			// Process each group of wiki links with the same ALT text hash
+			for (const [hashPart, { wikiLinks, altText }] of wikiLinksByAltHash.entries()) {
+				// Find matching S3 link for this hash part
+				const matchingS3Link = s3LinksByFilenameHash.get(hashPart);
 
 				if (matchingS3Link) {
 					// Add S3 link to removal list
 					s3LinksToRemove.push(matchingS3Link);
 
-					console.log(`Will replace ${wikiLinks.length} wiki links with S3 link: ${matchingS3Link}`);
+					console.log(`Will replace ${wikiLinks.length} wiki links with S3 link: ${matchingS3Link} (hash: ${hashPart})`);
 					totalReplacements += wikiLinks.length;
 				}
 			}
@@ -768,9 +774,9 @@ export default class S3UploaderPlugin extends Plugin {
 			let processedCount = 0;
 
 			// Process each group of wiki links
-			for (const [altText, wikiLinks] of wikiLinksByAlt.entries()) {
-				// Find matching S3 link for this ALT text
-				const matchingS3Link = s3LinksByFilename.get(altText);
+			for (const [hashPart, { wikiLinks, altText }] of wikiLinksByAltHash.entries()) {
+				// Find matching S3 link for this hash part
+				const matchingS3Link = s3LinksByFilenameHash.get(hashPart);
 
 				if (matchingS3Link) {
 					// Replace each wiki link with the S3 link
@@ -929,17 +935,25 @@ export default class S3UploaderPlugin extends Plugin {
 		let matchingPairs = 0;
 
 		if (wikiMatches.length > 0 && s3Matches.length > 0) {
-			// Extract filenames from S3 links
-			const s3Filenames = s3Matches.map(match => {
+			// Extract hash parts from S3 links
+			const s3FilenameHashes = s3Matches.map(match => {
 				const url = match[1];
-				return url.substring(url.lastIndexOf('/') + 1);
+				const filename = url.substring(url.lastIndexOf('/') + 1);
+				// Extract hash part (before extension if exists)
+				return filename.includes('.') ? filename.substring(0, filename.indexOf('.')) : filename;
 			});
 
-			// Count wiki links whose ALT matches an S3 filename
+			// Count wiki links whose ALT hash part matches an S3 filename hash part
 			for (const wikiMatch of wikiMatches) {
 				const altText = wikiMatch[2];
-				if (s3Filenames.some(filename => filename === altText)) {
-					matchingPairs++;
+				if (altText) {
+					// Extract hash part from ALT text
+					const altHashPart = altText.includes('.') ?
+						altText.substring(0, altText.indexOf('.')) : altText;
+
+					if (s3FilenameHashes.some(hash => hash === altHashPart)) {
+						matchingPairs++;
+					}
 				}
 			}
 		}
