@@ -605,12 +605,20 @@ export default class S3UploaderPlugin extends Plugin {
 				return; // Exit if no editor found
 			}
 
-			// Find all wiki links in the file
+			// Find all wiki links in the file with ALT text (format: ![[filename|alt]])
 			const wikiLinkRegex = /!\[\[(.*?)(?:\|(.*?))?\]\]/g;
 			const wikiMatches = [...content.matchAll(wikiLinkRegex)];
 
 			if (wikiMatches.length === 0) {
 				new Notice("No wiki links found in the document");
+				return;
+			}
+
+			// Filter wiki links to only include those with ALT text
+			const wikiLinksWithAlt = wikiMatches.filter(match => match[2] !== undefined);
+
+			if (wikiLinksWithAlt.length === 0) {
+				new Notice("No wiki links with ALT text found in the document");
 				return;
 			}
 
@@ -623,113 +631,93 @@ export default class S3UploaderPlugin extends Plugin {
 				return;
 			}
 
-			// Find groups of consecutive S3 links
-			const s3Groups: { start: number, end: number, count: number, text: string, links: RegExpMatchArray[] }[] = [];
-			let currentGroup = { start: -1, end: -1, count: 0, text: "", links: [] as RegExpMatchArray[] };
-
-			// Analyze each line to identify groups of consecutive S3 links
-			const lines = content.split("\n");
-			for (let i = 0; i < lines.length; i++) {
-				const line = lines[i];
-				const s3LinksInLine = [...line.matchAll(s3LinkRegex)];
-
-				if (s3LinksInLine.length > 0) {
-					// Start a new group or extend existing group
-					if (currentGroup.start === -1) {
-						currentGroup = {
-							start: i,
-							end: i,
-							count: s3LinksInLine.length,
-							text: line,
-							links: [...s3LinksInLine]
-						};
-					} else {
-						currentGroup.end = i;
-						currentGroup.count += s3LinksInLine.length;
-						currentGroup.text += "\n" + line;
-						currentGroup.links.push(...s3LinksInLine);
-					}
-				} else if (currentGroup.start !== -1) {
-					// End the group and save it
-					s3Groups.push({ ...currentGroup });
-					currentGroup = { start: -1, end: -1, count: 0, text: "", links: [] };
-				}
-			}
-
-			// Save the last group if exists
-			if (currentGroup.start !== -1) {
-				s3Groups.push({ ...currentGroup });
-			}
-
-			// Find the group with the most S3 links
-			if (s3Groups.length === 0) {
-				new Notice("No consecutive groups of S3 links found");
-				return;
-			}
-
-			// Identify the group with the most S3 links
-			const largestGroup = s3Groups.reduce((max, group) =>
-				group.count > max.count ? group : max, s3Groups[0]);
-
-			// Check if the number of wiki links matches the number of S3 links
-			if (largestGroup.count !== wikiMatches.length) {
-				new Notice(`Number of wiki links (${wikiMatches.length}) doesn't match S3 links (${largestGroup.count})`);
-				return;
-			}
-
-			// Extract S3 links from the largest group
-			const s3LinksInLargestGroup = largestGroup.links;
-
-			// Reverse S3 links to match wiki links in correct order
-			const reversedS3Links = [...s3LinksInLargestGroup].reverse();
-
 			// Save cursor position
 			const cursorPos = editor.getCursor();
 
-			// Replace wiki links with corresponding S3 links
-			let processedCount = 0;
-			for (let i = 0; i < wikiMatches.length; i++) {
-				const wikiMatch = wikiMatches[i];
-				const s3Match = reversedS3Links[i];
+			// Map to track wiki links by ALT text
+			const wikiLinksByAlt = new Map<string, string[]>();
 
-				const wikiLink = wikiMatch[0]; // ![[filename|title]]
-				const s3Link = s3Match[0];    // ![title](https://...)
+			// Group wiki links by ALT text
+			for (const wikiMatch of wikiLinksWithAlt) {
+				const wikiLink = wikiMatch[0]; // Complete wiki link: ![[filename|alt]]
+				const altText = wikiMatch[2]; // ALT text
 
-				// Replace in editor
-				await this.replaceText(editor, wikiLink, s3Link);
-				processedCount++;
+				if (!wikiLinksByAlt.has(altText)) {
+					wikiLinksByAlt.set(altText, []);
+				}
+				wikiLinksByAlt.get(altText)?.push(wikiLink);
+
+				console.log(`Grouped wiki link: ${wikiLink} with alt: ${altText}`);
 			}
 
-			// Remove duplicate S3 links from the largest group
-			if (processedCount > 0) {
-				// Process each line in the group
-				for (let lineIndex = largestGroup.start; lineIndex <= largestGroup.end; lineIndex++) {
-					// Get current line (after wiki link replacement)
-					const currentLine = editor.getLine(lineIndex);
+			// Map to store S3 links by ALT text (filename)
+			const s3LinksByFilename = new Map<string, string>();
 
-					// Find S3 links in the line
-					const s3LinksInLine = [...currentLine.matchAll(s3LinkRegex)];
+			// Find S3 links matching ALT texts
+			for (const s3Match of allS3Matches) {
+				const s3Link = s3Match[0]; // Complete S3 link: ![alt](url)
+				const s3Url = s3Match[2]; // URL from S3 link
 
-					if (s3LinksInLine.length > 0) {
-						// Create a line with S3 links removed
-						let updatedLine = currentLine;
-						for (const s3Link of s3LinksInLine) {
-							updatedLine = updatedLine.replace(s3Link[0], "");
-						}
+				// Extract the filename part from the URL
+				const urlFilename = s3Url.substring(s3Url.lastIndexOf('/') + 1);
 
-						// Replace the line
-						const lineStart = { line: lineIndex, ch: 0 };
-						const lineEnd = { line: lineIndex, ch: currentLine.length };
-						editor.replaceRange(updatedLine, lineStart, lineEnd);
+				// Store S3 link by filename
+				s3LinksByFilename.set(urlFilename, s3Link);
+
+				console.log(`Matched S3 link: ${s3Link} with filename: ${urlFilename}`);
+			}
+
+			// List to keep track of which S3 links to remove
+			const s3LinksToRemove: string[] = [];
+			let totalReplacements = 0;
+
+			// First, remove all matching S3 links
+			const updatedContent = editor.getValue();
+			let newContent = updatedContent;
+
+			// Process each group of wiki links with the same ALT text
+			for (const [altText, wikiLinks] of wikiLinksByAlt.entries()) {
+				// Find matching S3 link for this ALT text
+				const matchingS3Link = s3LinksByFilename.get(altText);
+
+				if (matchingS3Link) {
+					// Add S3 link to removal list
+					s3LinksToRemove.push(matchingS3Link);
+
+					console.log(`Will replace ${wikiLinks.length} wiki links with S3 link: ${matchingS3Link}`);
+					totalReplacements += wikiLinks.length;
+				}
+			}
+
+			// Remove all matched S3 links
+			for (const s3Link of s3LinksToRemove) {
+				newContent = newContent.replace(s3Link, "");
+			}
+
+			// Update editor with content that has S3 links removed
+			editor.setValue(newContent);
+
+			// Now replace wiki links with corresponding S3 links
+			let processedCount = 0;
+
+			// Process each group of wiki links
+			for (const [altText, wikiLinks] of wikiLinksByAlt.entries()) {
+				// Find matching S3 link for this ALT text
+				const matchingS3Link = s3LinksByFilename.get(altText);
+
+				if (matchingS3Link) {
+					// Replace each wiki link with the S3 link
+					for (const wikiLink of wikiLinks) {
+						await this.replaceText(editor, wikiLink, matchingS3Link);
+						processedCount++;
 					}
 				}
-
-				// Restore cursor position
-				editor.setCursor(cursorPos);
-
-				new Notice(`Replaced ${processedCount} wiki links with S3 links and removed duplicates`);
 			}
 
+			// Restore cursor position
+			editor.setCursor(cursorPos);
+
+			new Notice(`Replaced ${processedCount} wiki links with S3 links and removed duplicates`);
 		} catch (error) {
 			console.error("Error in processDownloadedImages:", error);
 			new Notice(`Error processing images: ${error.message}`);
