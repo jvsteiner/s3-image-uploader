@@ -408,8 +408,8 @@ export default class S3UploaderPlugin extends Plugin {
 		this.settings.imageUrlPath = this.settings.useCustomImageUrl
 			? this.settings.customImageUrl
 			: this.settings.forcePathStyle
-			? apiEndpoint + this.settings.bucket + "/"
-			: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
+				? apiEndpoint + this.settings.bucket + "/"
+				: apiEndpoint.replace("://", `://${this.settings.bucket}.`);
 
 		if (this.settings.bypassCors) {
 			this.s3 = new S3Client({
@@ -454,6 +454,20 @@ export default class S3UploaderPlugin extends Plugin {
 				const activeFile = this.app.workspace.getActiveFile();
 				if (activeFile && activeFile.extension === "md") {
 					await this.processDownloadedImages(activeFile);
+				} else {
+					new Notice("No active markdown file");
+				}
+			}
+		});
+
+		// Add command to replace ALT text with file hash
+		this.addCommand({
+			id: "replace-alt-with-hash",
+			name: "Replace image ALT text with file hash",
+			callback: async () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile && activeFile.extension === "md") {
+					await this.replaceAltWithHash(activeFile);
 				} else {
 					new Notice("No active markdown file");
 				}
@@ -540,7 +554,7 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 	}
 
-	onunload() {}
+	onunload() { }
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -718,6 +732,119 @@ export default class S3UploaderPlugin extends Plugin {
 
 		} catch (error) {
 			console.error("Error in processDownloadedImages:", error);
+			new Notice(`Error processing images: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Replace ALT text in external image links with file hash
+	 * This downloads each image temporarily, calculates its hash, and updates the ALT text
+	 */
+	async replaceAltWithHash(file: TFile): Promise<void> {
+		try {
+			// Get editor for this file
+			let editor: Editor | null = null;
+
+			// Try to find an open editor for this file
+			const leaves = this.app.workspace.getLeavesOfType("markdown");
+			for (const leaf of leaves) {
+				const view = leaf.view as MarkdownView;
+				if (view.file && view.file.path === file.path) {
+					editor = view.editor;
+					break;
+				}
+			}
+
+			// If no editor is found but we have an active editor, check if it's for the right file
+			if (!editor) {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView && activeView.file && activeView.file.path === file.path) {
+					editor = activeView.editor;
+				}
+			}
+
+			// Exit if no editor found
+			if (!editor) {
+				new Notice("No editor found for this file");
+				return;
+			}
+
+			// Get the content of the file
+			const content = editor.getValue();
+
+			// Find all external image links in the file
+			const externalImageRegex = /!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+			const externalImageMatches = [...content.matchAll(externalImageRegex)];
+
+			if (externalImageMatches.length === 0) {
+				new Notice("No external image links found in the document");
+				return;
+			}
+
+			new Notice(`Processing ${externalImageMatches.length} images...`);
+
+			// Save cursor position
+			const cursorPos = editor.getCursor();
+
+			// Process each image link
+			let processedCount = 0;
+			const totalImages = externalImageMatches.length;
+
+			for (const match of externalImageMatches) {
+				const fullMatch = match[0]; // The entire ![alt](url) match
+				const altText = match[1]; // The alt text
+				const imageUrl = match[2]; // The URL
+
+				try {
+					// Extract filename from URL
+					const url = new URL(imageUrl);
+					const pathname = url.pathname;
+					const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+
+					// Download the image
+					const response = await requestUrl({
+						url: imageUrl,
+						method: "GET"
+					});
+
+					// Get the image data
+					const imageData = new Uint8Array(response.arrayBuffer);
+
+					// Generate hash from the image data
+					const hash = await generateFileHash(imageData);
+
+					// Create the extension part
+					const extension = filename.includes('.') ?
+						filename.substring(filename.lastIndexOf('.')) :
+						'';
+
+					// Create new alt text with hash
+					const newAltText = `${hash}${extension}`;
+
+					// Create new markdown with the new alt text
+					const newMarkdown = `![${newAltText}](${imageUrl})`;
+
+					// Replace in editor
+					await this.replaceText(editor, fullMatch, newMarkdown);
+					processedCount++;
+
+					if (processedCount % 5 === 0 || processedCount === totalImages) {
+						new Notice(`Processed ${processedCount}/${totalImages} images`);
+					}
+				} catch (error) {
+					console.error(`Error processing image ${imageUrl}:`, error);
+					new Notice(`Error processing image: ${error.message}`);
+				}
+			}
+
+			// Restore cursor position
+			editor.setCursor(cursorPos);
+
+			if (processedCount > 0) {
+				new Notice(`Successfully processed ${processedCount} images`);
+			}
+		} catch (error) {
+			console.error("Error in replaceAltWithHash:", error);
 			new Notice(`Error processing images: ${error.message}`);
 		}
 	}
@@ -1233,9 +1360,8 @@ class ObsHttpHandler extends FetchHttpHandler {
 		}
 
 		const { port, method } = request;
-		const url = `${request.protocol}//${request.hostname}${
-			port ? `:${port}` : ""
-		}${path}`;
+		const url = `${request.protocol}//${request.hostname}${port ? `:${port}` : ""
+			}${path}`;
 		const body =
 			method === "GET" || method === "HEAD" ? undefined : request.body;
 
