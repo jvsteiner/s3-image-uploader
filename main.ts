@@ -446,28 +446,95 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.createS3Client();
 
-		// Add command to replace wiki links with S3 URLs
+		// Add command to process images from external to S3 in one step
 		this.addCommand({
-			id: "replace-wiki-links-with-s3",
-			name: "Replace wiki links with S3 URL",
+			id: "convert-external-images-to-s3",
+			name: "Convert External Images to S3",
 			callback: async () => {
 				const activeFile = this.app.workspace.getActiveFile();
 				if (activeFile && activeFile.extension === "md") {
-					await this.processDownloadedImages(activeFile);
-				} else {
-					new Notice("No active markdown file");
-				}
-			}
-		});
-
-		// Add command to replace ALT text with file hash
-		this.addCommand({
-			id: "replace-alt-with-hash",
-			name: "Replace image ALT text with file hash",
-			callback: async () => {
-				const activeFile = this.app.workspace.getActiveFile();
-				if (activeFile && activeFile.extension === "md") {
+					// Step 1: Replace image ALT text with file hash
+					new Notice("Step 1/3: Replacing image ALT text with file hash...");
 					await this.replaceAltWithHash(activeFile);
+
+					new Notice("Step 2/3: Running Obsidian's Download attachments command...");
+					// Execute Obsidian's built-in download attachments command
+					const commands = (this.app as any).commands;
+					if (commands && commands.executeCommandById) {
+						try {
+							// Launch the Obsidian download attachments command
+							await commands.executeCommandById("editor:download-attachments");
+
+							// Show instructions to the user
+							new Notice("Please select files to download in the dialog and click Download", 8000);
+
+							// Wait for download to complete by polling the document state
+							let downloadComplete = false;
+							let attempts = 0;
+							const maxAttempts = 30; // Max 30 attempts (30 seconds)
+
+							new Notice("Waiting for downloads to complete...");
+
+							// Track document stability
+							let stableCount = 0;
+							let lastSnapshot = null;
+
+							while (!downloadComplete && attempts < maxAttempts) {
+								await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+								attempts++;
+
+								// Get current document state
+								const currentSnapshot = await this.getDocumentSnapshot(activeFile);
+
+								// Check if any downloads are detected yet
+								if (currentSnapshot.matchingPairs > 0) {
+									// If this is our first snapshot or if the content has changed
+									if (!lastSnapshot || lastSnapshot.content !== currentSnapshot.content) {
+										// Reset stability counter
+										stableCount = 0;
+										// Update last snapshot
+										lastSnapshot = currentSnapshot;
+
+										// Log the change
+										console.log(`Document changed: ${currentSnapshot.wikiLinksWithAlt} wiki links, ${currentSnapshot.s3Links} S3 links, ${currentSnapshot.matchingPairs} matching pairs`);
+									} else {
+										// Content is stable
+										stableCount++;
+
+										// If stable for 2 consecutive checks (2 seconds), consider download complete
+										if (stableCount >= 2) {
+											downloadComplete = true;
+											console.log(`Document stable for ${stableCount} seconds, download complete`);
+										}
+									}
+								}
+
+								// Update progress every 5 seconds
+								if (attempts % 5 === 0) {
+									if (lastSnapshot) {
+										new Notice(`Waiting for downloads to stabilize... (${attempts}s, found ${lastSnapshot.matchingPairs} files)`);
+									} else {
+										new Notice(`Waiting for downloads to start... (${attempts}s)`);
+									}
+								}
+							}
+
+							if (downloadComplete) {
+								// Step 3: Replace wiki links with S3 URLs
+								new Notice("Step 3/3: Replacing wiki links with S3 URLs...");
+								await this.processDownloadedImages(activeFile);
+
+								new Notice("✅ Image processing complete!");
+							} else {
+								new Notice("Download completion not detected after timeout. Please try running the command again from the beginning.");
+							}
+						} catch (error) {
+							console.error("Error executing download command:", error);
+							new Notice("Error during download step. Please try running the command again from the beginning.");
+						}
+					} else {
+						new Notice("Could not access Obsidian commands. Please try running the command again from the beginning.");
+					}
 				} else {
 					new Notice("No active markdown file");
 				}
@@ -835,6 +902,54 @@ export default class S3UploaderPlugin extends Plugin {
 			console.error("Error in replaceAltWithHash:", error);
 			new Notice(`Error processing images: ${error.message}`);
 		}
+	}
+
+	/**
+	 * Get document snapshot with wiki links and S3 links
+	 * @returns Object with counts of wiki links with ALT and S3 links, and matching pairs
+	 */
+	private async getDocumentSnapshot(file: TFile): Promise<{
+		wikiLinksWithAlt: number,
+		s3Links: number,
+		matchingPairs: number,
+		content: string
+	}> {
+		// Get the content of the file
+		const content = await this.app.vault.read(file);
+
+		// Find all wiki links with ALT text (format: ![[filename|alt]])
+		const wikiLinkRegex = /!\[\[(.*?)\|(.*?)\]\]/g;
+		const wikiMatches = [...content.matchAll(wikiLinkRegex)];
+
+		// Find all S3 links in the file
+		const s3LinkRegex = /!\[.*?\]\((https?:\/\/.*?)\)/g;
+		const s3Matches = [...content.matchAll(s3LinkRegex)];
+
+		// Count matching pairs
+		let matchingPairs = 0;
+
+		if (wikiMatches.length > 0 && s3Matches.length > 0) {
+			// Extract filenames from S3 links
+			const s3Filenames = s3Matches.map(match => {
+				const url = match[1];
+				return url.substring(url.lastIndexOf('/') + 1);
+			});
+
+			// Count wiki links whose ALT matches an S3 filename
+			for (const wikiMatch of wikiMatches) {
+				const altText = wikiMatch[2];
+				if (s3Filenames.some(filename => filename === altText)) {
+					matchingPairs++;
+				}
+			}
+		}
+
+		return {
+			wikiLinksWithAlt: wikiMatches.length,
+			s3Links: s3Matches.length,
+			matchingPairs: matchingPairs,
+			content: content
+		};
 	}
 }
 
