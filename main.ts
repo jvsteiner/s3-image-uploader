@@ -26,6 +26,7 @@ import {
 import { filesize } from "filesize";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import imageCompression from "browser-image-compression";
+import { minimatch } from "minimatch";
 
 // Remember to rename these classes and interfaces!!
 
@@ -62,6 +63,7 @@ interface S3UploaderSettings {
 	maxImageCompressionSize: number;
 	imageCompressionQuality: number;
 	maxImageWidthOrHeight: number;
+	ignorePattern: string;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -89,6 +91,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	maxImageCompressionSize: 1,
 	imageCompressionQuality: 0.7,
 	maxImageWidthOrHeight: 4096,
+	ignorePattern: "",
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -189,6 +192,16 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 	}
 
+	private shouldIgnoreCurrentFile(): boolean {
+		const noteFile = this.app.workspace.getActiveFile();
+		if (!noteFile || !this.settings.ignorePattern) {
+			return false;
+		}
+
+		const filePath = noteFile.path;
+		return matchesGlobPattern(filePath, this.settings.ignorePattern);
+	}
+
 	async uploadFile(file: File, key: string): Promise<string> {
 		const buf = await file.arrayBuffer();
 		await this.s3.send(
@@ -277,8 +290,14 @@ export default class S3UploaderPlugin extends Plugin {
 			}
 		}
 
-		// Only prevent default if we have files to handle
+		// Only prevent default and proceed if we have files to handle AND file is not ignored
 		if (files.length > 0) {
+			// Check if uploads should be ignored for this file AFTER we know there are files
+			// but BEFORE we prevent default behavior
+			if (this.shouldIgnoreCurrentFile()) {
+				return; // Let default Obsidian behavior handle the files
+			}
+			
 			if (ev) ev.preventDefault();
 			new Notice("Uploading files...");
 
@@ -485,6 +504,11 @@ export default class S3UploaderPlugin extends Plugin {
 				const activeView =
 					this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (!activeView) return;
+
+				// Check if uploads should be ignored for the current file
+				if (this.shouldIgnoreCurrentFile()) {
+					return; // Don't process the file, let Obsidian handle it normally
+				}
 
 				try {
 					const fileContent = await this.app.vault.readBinary(file);
@@ -957,6 +981,21 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		this.toggleCompressionSettings(
 			this.plugin.settings.enableImageCompression
 		);
+
+		new Setting(containerEl)
+			.setName("Ignore Pattern")
+			.setDesc(
+				"Glob pattern to ignore files/folders. Use * for any characters, ** for any path, ? for single character. Separate multiple patterns with commas. Example: 'private/*, **/drafts/**, temp*'"
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("private/*, **/drafts/**")
+					.setValue(this.plugin.settings.ignorePattern)
+					.onChange(async (value) => {
+						this.plugin.settings.ignorePattern = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 }
 
@@ -1134,4 +1173,21 @@ async function generateFileHash(data: Uint8Array): Promise<string> {
 		.map((b) => b.toString(16).padStart(2, "0"))
 		.join("");
 	return hashHex.slice(0, 32); // Truncate to same length as MD5 for compatibility
+}
+
+/**
+ * Check if a file path matches a glob pattern using minimatch
+ * Supports standard glob patterns: *, **, ?, etc.
+ */
+function matchesGlobPattern(filePath: string, pattern: string): boolean {
+	if (!pattern || pattern.trim() === "") {
+		return false;
+	}
+
+	// Split patterns by comma to support multiple patterns
+	const patterns = pattern.split(',').map(p => p.trim());
+	
+	return patterns.some(p => {
+		return minimatch(filePath, p);
+	});
 }

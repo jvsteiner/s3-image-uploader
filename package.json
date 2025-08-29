@@ -33,6 +33,7 @@
 		"@aws-sdk/types": "^3.310.0",
 		"@smithy/fetch-http-handler": "^2.2.7",
 		"browser-image-compression": "^2.0.2",
-		"filesize": "^10.1.6"
+		"filesize": "^10.1.6",
+		"minimatch": "^10.0.3"
 	}
 }
