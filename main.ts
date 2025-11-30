@@ -346,6 +346,7 @@ export default class S3UploaderPlugin extends Plugin {
 				}
 
 				const currentDate = new Date();
+
 				folder = folder
 					.replace("${year}", currentDate.getFullYear().toString())
 					.replace(
@@ -355,7 +356,12 @@ export default class S3UploaderPlugin extends Plugin {
 					.replace(
 						"${day}",
 						String(currentDate.getDate()).padStart(2, "0"),
+					)
+					.replace(
+						"${basename}",
+						noteFile.basename.replace(/ /g, "-"),
 					);
+
 				const key = folder ? `${folder}/${newFileName}` : newFileName;
 
 				try {
@@ -688,7 +694,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Bucket folder")
 			.setDesc(
-				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, and ${day} variables.",
+				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, ${day} and ${basename} variables.",
 			)
 			.addText((text) =>
 				text
