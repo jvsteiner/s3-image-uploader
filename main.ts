@@ -16,6 +16,7 @@ import {
 	Menu,
 	Modal,
 } from "obsidian";
+import { $ } from "./src/lang/lang";
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
 import { buildQueryString } from "@aws-sdk/querystring-builder";
@@ -695,11 +696,11 @@ export default class S3UploaderPlugin extends Plugin {
 	 * Start batch upload with progress modal
 	 */
 	async batchUpload(scope: "vault" | "folder", folderPath?: string): Promise<void> {
-		new Notice(`Scanning for local images...`);
+		new Notice($("Scanning for local images..."));
 		const tasks = await this.scanLocalImages(scope, folderPath);
 
 		if (tasks.length === 0) {
-			new Notice("No local images found to upload");
+			new Notice($("No local images found to upload"));
 			return;
 		}
 
@@ -710,11 +711,11 @@ export default class S3UploaderPlugin extends Plugin {
 
 		if (!confirmed) return;
 
-		new Notice(`Starting batch upload of ${tasks.length} files...`);
+		new Notice($("Starting batch upload of ${count} files...", { count: tasks.length }));
 
 		const logs = await this.executeBatchUpload(tasks, (current, total) => {
 			if (current % 5 === 0 || current === total) {
-				new Notice(`Uploading: ${current}/${total}`);
+				new Notice($("Uploading: ${current}/${total}", { current, total }));
 			}
 		});
 
@@ -722,7 +723,7 @@ export default class S3UploaderPlugin extends Plugin {
 		const failedCount = logs.filter((l) => l.status === "failed").length;
 
 		new Notice(
-			`Batch upload complete: ${successCount} success, ${failedCount} failed`,
+			$("Batch upload complete: ${success} success, ${failed} failed", { success: successCount, failed: failedCount }),
 		);
 
 		if (this.settings.enableBatchLog) {
@@ -731,7 +732,7 @@ export default class S3UploaderPlugin extends Plugin {
 				scope === "vault" ? "Full Vault" : `Folder: ${folderPath}`,
 			);
 			if (logPath) {
-				new Notice(`Log saved to ${logPath}`);
+				new Notice($("Log saved to ${path}", { path: logPath }));
 			}
 		}
 	}
@@ -771,15 +772,15 @@ export default class S3UploaderPlugin extends Plugin {
 		}
 
 		if (tasks.length === 0) {
-			new Notice("No local images found in this file");
+			new Notice($("No local images found in this file"));
 			return;
 		}
 
-		new Notice(`Uploading ${tasks.length} images...`);
+		new Notice($("Uploading ${count} images...", { count: tasks.length }));
 
 		const logs = await this.executeBatchUpload(tasks, (current, total) => {
 			if (current % 3 === 0 || current === total) {
-				new Notice(`Uploading: ${current}/${total}`);
+				new Notice($("Uploading: ${current}/${total}", { current, total }));
 			}
 		});
 
@@ -788,7 +789,7 @@ export default class S3UploaderPlugin extends Plugin {
 		const skippedCount = logs.filter((l) => l.status === "skipped").length;
 
 		new Notice(
-			`Upload complete: ${successCount} success, ${failedCount} failed, ${skippedCount} skipped`,
+			$("Upload complete: ${success} success, ${failed} failed, ${skipped} skipped", { success: successCount, failed: failedCount, skipped: skippedCount }),
 		);
 	}
 
@@ -809,7 +810,9 @@ export default class S3UploaderPlugin extends Plugin {
 				ContentType: file.type,
 			}),
 		);
-		let urlString = this.settings.imageUrlPath + key;
+		// Encode each path segment to handle Chinese characters properly
+		const encodedKey = key.split('/').map(part => encodeURIComponent(part)).join('/');
+		let urlString = this.settings.imageUrlPath + encodedKey;
 		if (this.settings.queryStringKey && this.settings.queryStringValue) {
 			const urlObject = new URL(urlString);
 
@@ -835,7 +838,7 @@ export default class S3UploaderPlugin extends Plugin {
 		const originalSize = filesize(file.size); // Input file size
 		const newSize = filesize(compressedFile.size);
 
-		new Notice(`Image compressed from ${originalSize} to ${newSize}`);
+		new Notice($("Image compressed from ${originalSize} to ${newSize}", { originalSize, newSize }));
 
 		return fileBuffer;
 	}
@@ -896,7 +899,7 @@ export default class S3UploaderPlugin extends Plugin {
 			}
 
 			if (ev) ev.preventDefault();
-			new Notice("Uploading files...");
+			new Notice($("Uploading files..."));
 
 			// Remember cursor position before any changes
 			const cursorPos = editor.getCursor();
@@ -994,14 +997,14 @@ export default class S3UploaderPlugin extends Plugin {
 								type: file.type,
 							});
 							const localPath = await this.saveToLocal(fallbackFile, newFileName);
-							new Notice(`S3 upload failed, saved locally: ${newFileName}`);
+							new Notice($("S3 upload failed, saved locally: ${fileName}", { fileName: newFileName }));
 							return `![[${localPath}]]`;
 						} catch (localError) {
 							console.error("Local fallback also failed:", localError);
-							return `Error uploading file: ${error.message}`;
+							return $("Error uploading file: ${message}", { message: error.message });
 						}
 					}
-					return `Error uploading file: ${error.message}`;
+					return $("Error uploading file: ${message}", { message: error.message });
 				}
 			});
 
@@ -1029,11 +1032,11 @@ export default class S3UploaderPlugin extends Plugin {
 						],
 					});
 
-					new Notice("All files uploaded successfully");
+					new Notice($("All files uploaded successfully"));
 				}
 			} catch (error) {
 				console.error("Error during upload or insertion:", error);
-				new Notice(`Error: ${error.message}`);
+				new Notice($("Error uploading file: ${message}", { message: error.message }));
 			}
 		}
 	}
@@ -1090,7 +1093,7 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.addCommand({
 			id: "upload-image",
-			name: "Upload image",
+			name: $("Upload image"),
 			icon: "image-plus",
 			mobileOnly: false,
 			editorCallback: (editor) => {
@@ -1122,21 +1125,21 @@ export default class S3UploaderPlugin extends Plugin {
 		// Register batch upload commands
 		this.addCommand({
 			id: "batch-upload-vault",
-			name: "Batch upload all local images in vault",
+			name: $("Batch upload all local images in vault"),
 			icon: "upload-cloud",
 			callback: () => this.batchUpload("vault"),
 		});
 
 		this.addCommand({
 			id: "batch-upload-current-folder",
-			name: "Batch upload local images in current folder",
+			name: $("Batch upload local images in current folder"),
 			icon: "folder-up",
 			callback: () => {
 				const activeFile = this.app.workspace.getActiveFile();
 				if (activeFile?.parent) {
 					this.batchUpload("folder", activeFile.parent.path);
 				} else {
-					new Notice("No active folder");
+					new Notice($("No active folder"));
 				}
 			},
 		});
@@ -1146,7 +1149,7 @@ export default class S3UploaderPlugin extends Plugin {
 			this.app.workspace.on("file-menu", (menu: Menu, file) => {
 				if (file instanceof TFolder) {
 					menu.addItem((item) => {
-						item.setTitle("S3: Batch upload images")
+						item.setTitle($("S3: Batch upload images"))
 							.setIcon("upload-cloud")
 							.onClick(() => this.batchUpload("folder", file.path));
 					});
@@ -1167,11 +1170,11 @@ export default class S3UploaderPlugin extends Plugin {
 
 				// Always add "Upload all images in current file" option
 				menu.addItem((item) => {
-					item.setTitle("S3: Upload all local images in this file")
+					item.setTitle($("S3: Upload all local images in this file"))
 						.setIcon("upload-cloud")
 						.onClick(async () => {
 							if (!view.file) {
-								new Notice("No active file");
+								new Notice($("No active file"));
 								return;
 							}
 							await this.uploadAllImagesInFile(view.file);
@@ -1229,12 +1232,12 @@ export default class S3UploaderPlugin extends Plugin {
 						);
 						activeView.editor.replaceRange("", from, to);
 					} else {
-						new Notice(`Failed to find: ${obsidianLink}`);
+						new Notice($("Failed to find: ${link}", { link: obsidianLink }));
 					}
 
 					await this.app.vault.delete(file);
 				} catch (error) {
-					new Notice(`Error processing file: ${error.message}`);
+					new Notice($("Error processing file: ${message}", { message: error.message }));
 				}
 			}),
 		);
@@ -1252,7 +1255,7 @@ export default class S3UploaderPlugin extends Plugin {
 		if (mediaLink.type === "local") {
 			// Local file - offer to upload to S3
 			menu.addItem((item) => {
-				item.setTitle("S3: Upload to cloud")
+				item.setTitle($("S3: Upload to cloud"))
 					.setIcon("upload-cloud")
 					.onClick(async () => {
 						try {
@@ -1261,7 +1264,7 @@ export default class S3UploaderPlugin extends Plugin {
 								view.file?.path || "",
 							);
 							if (!(linkedFile instanceof TFile)) {
-								new Notice("File not found");
+								new Notice($("File not found"));
 								return;
 							}
 
@@ -1276,7 +1279,7 @@ export default class S3UploaderPlugin extends Plugin {
 								type: getMimeType(ext),
 							});
 
-							new Notice("Uploading to S3...");
+							new Notice($("Uploading to S3..."));
 							const url = await this.uploadFile(file, key);
 
 							// Replace link in editor
@@ -1295,16 +1298,16 @@ export default class S3UploaderPlugin extends Plugin {
 								await this.app.vault.trash(linkedFile, true);
 							}
 
-							new Notice("Uploaded successfully!");
+							new Notice($("Uploaded successfully!"));
 						} catch (error) {
-							new Notice(`Upload failed: ${error.message}`);
+							new Notice($("Upload failed: ${message}", { message: error.message }));
 						}
 					});
 			});
 
 			// Delete local file
 			menu.addItem((item) => {
-				item.setTitle("S3: Delete local file")
+				item.setTitle($("S3: Delete local file"))
 					.setIcon("trash-2")
 					.onClick(async () => {
 						try {
@@ -1313,7 +1316,7 @@ export default class S3UploaderPlugin extends Plugin {
 								view.file?.path || "",
 							);
 							if (!(linkedFile instanceof TFile)) {
-								new Notice("File not found");
+								new Notice($("File not found"));
 								return;
 							}
 
@@ -1340,16 +1343,16 @@ export default class S3UploaderPlugin extends Plugin {
 							const cursor = editor.getCursor();
 							editor.setLine(cursor.line, newLine.trim());
 
-							new Notice("Local file deleted!");
+							new Notice($("Local file deleted!"));
 						} catch (error) {
-							new Notice(`Delete failed: ${error.message}`);
+							new Notice($("Delete failed: ${message}", { message: error.message }));
 						}
 					});
 			});
 
 			// Rename alt text (only for local images)
 			menu.addItem((item) => {
-				item.setTitle("S3: Rename description")
+				item.setTitle($("S3: Rename description"))
 					.setIcon("pencil")
 					.onClick(async () => {
 						const newAlt = await new Promise<string | null>((resolve) => {
@@ -1380,17 +1383,17 @@ export default class S3UploaderPlugin extends Plugin {
 
 						const cursor = editor.getCursor();
 						editor.setLine(cursor.line, newLine);
-						new Notice("Description updated!");
+						new Notice($("Description updated!"));
 					});
 			});
 		} else {
 			// Remote URL - offer to download or delete
 			menu.addItem((item) => {
-				item.setTitle("S3: Download to local")
+				item.setTitle($("S3: Download to local"))
 					.setIcon("download")
 					.onClick(async () => {
 						try {
-							new Notice("Downloading from S3...");
+							new Notice($("Downloading from S3..."));
 							const localPath = await this.downloadFromS3(mediaLink.path, view.file?.path);
 
 							// Replace link in editor
@@ -1403,9 +1406,9 @@ export default class S3UploaderPlugin extends Plugin {
 							const cursor = editor.getCursor();
 							editor.setLine(cursor.line, newLine);
 
-							new Notice(`Downloaded to ${localPath}`);
+							new Notice($("Downloaded to ${path}", { path: localPath }));
 						} catch (error) {
-							new Notice(`Download failed: ${error.message}`);
+							new Notice($("Download failed: ${message}", { message: error.message }));
 						}
 					});
 			});
@@ -1414,7 +1417,7 @@ export default class S3UploaderPlugin extends Plugin {
 			const s3Key = this.extractS3KeyFromUrl(mediaLink.path);
 			if (s3Key) {
 				menu.addItem((item) => {
-					item.setTitle("S3: Delete from cloud")
+					item.setTitle($("S3: Delete from cloud"))
 						.setIcon("trash-2")
 						.onClick(async () => {
 							const confirmed = await new Promise<boolean>((resolve) => {
@@ -1425,7 +1428,7 @@ export default class S3UploaderPlugin extends Plugin {
 							if (!confirmed) return;
 
 							try {
-								new Notice("Deleting from S3...");
+								new Notice($("Deleting from S3..."));
 								await this.deleteS3Object(s3Key);
 
 								// Remove the link from editor
@@ -1436,9 +1439,9 @@ export default class S3UploaderPlugin extends Plugin {
 								const cursor = editor.getCursor();
 								editor.setLine(cursor.line, newLine.trim());
 
-								new Notice("Deleted from S3!");
+								new Notice($("Deleted from S3!"));
 							} catch (error) {
-								new Notice(`Delete failed: ${error.message}`);
+								new Notice($("Delete failed: ${message}", { message: error.message }));
 							}
 						});
 				});
@@ -1497,7 +1500,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Settings for S3 Image Uploader" });
+		containerEl.createEl("h2", { text: $("Settings for S3 Image Uploader") });
 
 		containerEl.createEl("br");
 
@@ -1514,8 +1517,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		containerEl.createEl("br");
 
 		new Setting(containerEl)
-			.setName("AWS Access Key ID")
-			.setDesc("AWS access key ID for a user with S3 access.")
+			.setName($("AWS Access Key ID"))
+			.setDesc($("AWS access key ID for a user with S3 access."))
 			.addText((text) => {
 				wrapTextWithPasswordHide(text);
 				text.setPlaceholder("access key")
@@ -1528,8 +1531,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("AWS Secret Key")
-			.setDesc("AWS secret key for that user.")
+			.setName($("AWS Secret Key"))
+			.setDesc($("AWS secret key for that user."))
 			.addText((text) => {
 				wrapTextWithPasswordHide(text);
 				text.setPlaceholder("secret key")
@@ -1542,8 +1545,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Region")
-			.setDesc("AWS region of the S3 bucket.")
+			.setName($("Region"))
+			.setDesc($("AWS region of the S3 bucket."))
 			.addText((text) =>
 				text
 					.setPlaceholder("aws region")
@@ -1556,8 +1559,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("S3 Bucket")
-			.setDesc("S3 bucket name.")
+			.setName($("S3 Bucket"))
+			.setDesc($("S3 bucket name."))
 			.addText((text) =>
 				text
 					.setPlaceholder("bucket name")
@@ -1570,9 +1573,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bucket folder")
+			.setName($("Bucket folder"))
 			.setDesc(
-				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, ${day} and ${basename} variables.",
+				$("Optional folder in s3 bucket. Support the use of ${year}, ${month}, ${day} and ${basename} variables."),
 			)
 			.addText((text) =>
 				text
@@ -1585,9 +1588,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Upload on drag")
+			.setName($("Upload on drag"))
 			.setDesc(
-				"Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note.",
+				$("Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1599,9 +1602,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload video files")
+			.setName($("Upload video files"))
 			.setDesc(
-				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note.",
+				$("Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1613,9 +1616,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload audio files")
+			.setName($("Upload audio files"))
 			.setDesc(
-				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note.",
+				$("Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1627,9 +1630,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload pdf files")
+			.setName($("Upload pdf files"))
 			.setDesc(
-				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files.",
+				$("Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1641,9 +1644,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Copy to local folder")
+			.setName($("Copy to local folder"))
 			.setDesc(
-				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3.",
+				$('Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note. This will copy the images to a folder in your local file system, instead of s3.'),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1655,9 +1658,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Local folder")
+			.setName($("Local folder"))
 			.setDesc(
-				'Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note.  This affects only local uploads.',
+				$('Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note. This affects only local uploads.'),
 			)
 			.addText((text) =>
 				text
@@ -1670,8 +1673,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Use custom endpoint")
-			.setDesc("Use the custom api endpoint below.")
+			.setName($("Use custom endpoint"))
+			.setDesc($("Use the custom api endpoint below."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomEndpoint)
@@ -1683,9 +1686,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Custom S3 Endpoint")
+			.setName($("Custom S3 Endpoint"))
 			.setDesc(
-				"Optionally set a custom endpoint for any S3 compatible storage provider.",
+				$("Optionally set a custom endpoint for any S3 compatible storage provider."),
 			)
 			.addText((text) =>
 				text
@@ -1703,9 +1706,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("S3 Path Style URLs")
+			.setName($("S3 Path Style URLs"))
 			.setDesc(
-				"Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).",
+				$("Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com)."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1718,8 +1721,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Use custom image URL")
-			.setDesc("Use the custom image URL below.")
+			.setName($("Use custom image URL"))
+			.setDesc($("Use the custom image URL below."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomImageUrl)
@@ -1731,9 +1734,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Custom Image URL")
+			.setName($("Custom Image URL"))
 			.setDesc(
-				"Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.",
+				$("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN."),
 			)
 			.addText((text) =>
 				text
@@ -1750,9 +1753,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bypass local CORS check")
+			.setName($("Bypass local CORS check"))
 			.setDesc(
-				"Bypass local CORS preflight checks - it might work on later versions of Obsidian.",
+				$("Bypass local CORS preflight checks - it might work on later versions of Obsidian."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1764,8 +1767,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 		new Setting(containerEl)
-			.setName("Query String Key")
-			.setDesc("Appended to the end of the URL. Optional")
+			.setName($("Query String Key"))
+			.setDesc($("Appended to the end of the URL. Optional"))
 			.addText((text) =>
 				text
 					.setPlaceholder("Empty means no query string key")
@@ -1777,8 +1780,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Query String Value")
-			.setDesc("Appended to the end of the URL. Optional")
+			.setName($("Query String Value"))
+			.setDesc($("Appended to the end of the URL. Optional"))
 			.addText((text) =>
 				text
 					.setPlaceholder("Empty means no query string value")
@@ -1790,8 +1793,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Enable Image Compression")
-			.setDesc("This will reduce the size of images before uploading.")
+			.setName($("Enable Image Compression"))
+			.setDesc($("This will reduce the size of images before uploading."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.enableImageCompression)
@@ -1806,9 +1809,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		// Always create the compression settings, but control visibility
 		this.compressionSizeSettings = new Setting(containerEl)
-			.setName("Max Image Size")
+			.setName($("Max Image Size"))
 			.setDesc(
-				"Maximum size of the image after compression in MB. Default is 1MB.",
+				$("Maximum size of the image after compression in MB. Default is 1MB."),
 			)
 			.addText((text) =>
 				text
@@ -1821,7 +1824,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						const newValue = parseFloat(value);
 						if (isNaN(newValue) || newValue <= 0) {
 							new Notice(
-								"Max Image Compression Size must be a number greater than 0",
+								$("Max Image Compression Size must be a number greater than 0"),
 							);
 							return;
 						}
@@ -1832,9 +1835,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		this.compressionQualitySettings = new Setting(containerEl)
-			.setName("Image Compression Quality")
+			.setName($("Image Compression Quality"))
 			.setDesc(
-				"Maximum quality of the image after compression. Default is 0.7.",
+				$("Maximum quality of the image after compression. Default is 0.7."),
 			)
 			.addSlider((slider) => {
 				slider.setDynamicTooltip();
@@ -1847,9 +1850,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		this.compressionDimensionSettings = new Setting(containerEl)
-			.setName("Max Image Width or Height")
+			.setName($("Max Image Width or Height"))
 			.setDesc(
-				"Maximum width or height of the image after compression. Default is 4096px.",
+				$("Maximum width or height of the image after compression. Default is 4096px."),
 			)
 			.addText((text) =>
 				text
@@ -1862,7 +1865,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 						if (isNaN(parsedValue) || parsedValue <= 0) {
 							new Notice(
-								"Max Image Width or Height must be a number greater than 0",
+								$("Max Image Width or Height must be a number greater than 0"),
 							);
 							return;
 						}
@@ -1879,9 +1882,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		);
 
 		new Setting(containerEl)
-			.setName("Ignore Pattern")
+			.setName($("Ignore Pattern"))
 			.setDesc(
-				"Glob pattern to ignore files/folders. Use * for any characters, ** for any path, ? for single character. Separate multiple patterns with commas. Example: 'private/*, **/drafts/**, temp*'",
+				$("Glob pattern to ignore files/folders. Use * for any characters, ** for any path, ? for single character. Separate multiple patterns with commas. Example: 'private/*, **/drafts/**, temp*'"),
 			)
 			.addText((text) =>
 				text
@@ -1894,12 +1897,12 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		// New settings section
-		containerEl.createEl("h3", { text: "Advanced Upload Settings" });
+		containerEl.createEl("h3", { text: $("Advanced Upload Settings") });
 
 		new Setting(containerEl)
-			.setName("Fallback to local on upload failure")
+			.setName($("Fallback to local on upload failure"))
 			.setDesc(
-				"When S3 upload fails, save the file to local attachment folder instead.",
+				$("When S3 upload fails, save the file to local attachment folder instead."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1911,9 +1914,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Delete local file after upload")
+			.setName($("Delete local file after upload"))
 			.setDesc(
-				"Delete the local file after successfully uploading to S3. Files will be moved to system trash.",
+				$("Delete the local file after successfully uploading to S3. Files will be moved to system trash."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1925,9 +1928,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Enable batch upload log")
+			.setName($("Enable batch upload log"))
 			.setDesc(
-				"Generate a log file after batch upload operations with details about each file.",
+				$("Generate a log file after batch upload operations with details about each file."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1939,8 +1942,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Batch log folder")
-			.setDesc("Folder to store batch upload log files.")
+			.setName($("Batch log folder"))
+			.setDesc($("Folder to store batch upload log files."))
 			.addText((text) =>
 				text
 					.setPlaceholder(".s3-logs")
@@ -2202,15 +2205,15 @@ class BatchConfirmModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		contentEl.createEl("h2", { text: "Batch Upload Confirmation" });
+		contentEl.createEl("h2", { text: $("Batch Upload Confirmation") });
 		contentEl.createEl("p", {
-			text: `Found ${this.count} local media files to upload. Continue?`,
+			text: $("Found ${count} local media files to upload. Continue?", { count: this.count }),
 		});
 
 		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
 
 		const confirmBtn = buttonContainer.createEl("button", {
-			text: "Upload All",
+			text: $("Upload All"),
 			cls: "mod-cta",
 		});
 		confirmBtn.addEventListener("click", () => {
@@ -2218,7 +2221,7 @@ class BatchConfirmModal extends Modal {
 			this.close();
 		});
 
-		const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
 		cancelBtn.addEventListener("click", () => {
 			this.resolve(false);
 			this.close();
@@ -2246,7 +2249,7 @@ class RenameAltModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		contentEl.createEl("h2", { text: "Rename Description" });
+		contentEl.createEl("h2", { text: $("Rename Description") });
 
 		const inputEl = contentEl.createEl("input", {
 			type: "text",
@@ -2259,7 +2262,7 @@ class RenameAltModal extends Modal {
 		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
 
 		const confirmBtn = buttonContainer.createEl("button", {
-			text: "Save",
+			text: $("Save"),
 			cls: "mod-cta",
 		});
 		confirmBtn.addEventListener("click", () => {
@@ -2267,7 +2270,7 @@ class RenameAltModal extends Modal {
 			this.close();
 		});
 
-		const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
 		cancelBtn.addEventListener("click", () => {
 			this.resolve(null);
 			this.close();
@@ -2305,20 +2308,20 @@ class DeleteConfirmModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
-		contentEl.createEl("h2", { text: "Delete from S3" });
+		contentEl.createEl("h2", { text: $("Delete from S3") });
 		contentEl.createEl("p", {
-			text: `Are you sure you want to delete this file from S3?`,
+			text: $("Are you sure you want to delete this file from S3?"),
 		});
 		contentEl.createEl("code", { text: this.s3Key });
 		contentEl.createEl("p", {
-			text: "This action cannot be undone.",
+			text: $("This action cannot be undone."),
 			cls: "mod-warning",
 		});
 
 		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
 
 		const confirmBtn = buttonContainer.createEl("button", {
-			text: "Delete",
+			text: $("Delete"),
 			cls: "mod-warning",
 		});
 		confirmBtn.addEventListener("click", () => {
@@ -2326,7 +2329,7 @@ class DeleteConfirmModal extends Modal {
 			this.close();
 		});
 
-		const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
 		cancelBtn.addEventListener("click", () => {
 			this.resolve(false);
 			this.close();
