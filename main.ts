@@ -11,8 +11,12 @@ import {
 	RequestUrlParam,
 	requestUrl,
 	TFile,
+	TFolder,
 	MarkdownView,
+	Menu,
+	Modal,
 } from "obsidian";
+import { $ } from "./src/lang/lang";
 import { HttpRequest, HttpResponse } from "@aws-sdk/protocol-http";
 import { HttpHandlerOptions } from "@aws-sdk/types";
 import { buildQueryString } from "@aws-sdk/querystring-builder";
@@ -24,7 +28,7 @@ import {
 } from "@smithy/fetch-http-handler";
 
 import { filesize } from "filesize";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import imageCompression from "browser-image-compression";
 import { minimatch } from "minimatch";
 
@@ -64,6 +68,11 @@ interface S3UploaderSettings {
 	imageCompressionQuality: number;
 	maxImageWidthOrHeight: number;
 	ignorePattern: string;
+	// New settings
+	fallbackToLocal: boolean;
+	deleteLocalAfterUpload: boolean;
+	enableBatchLog: boolean;
+	batchLogFolder: string;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -92,12 +101,46 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	imageCompressionQuality: 0.7,
 	maxImageWidthOrHeight: 4096,
 	ignorePattern: "",
+	// New settings defaults
+	fallbackToLocal: true,
+	deleteLocalAfterUpload: false,
+	enableBatchLog: true,
+	batchLogFolder: ".s3-logs",
 };
+
+// Batch upload types
+interface BatchTask {
+	file: TFile;
+	notePath: string;
+	matchText: string;
+	localPath: string;
+}
+
+interface LogEntry {
+	timestamp: string;
+	fileName: string;
+	originalPath: string;
+	newUrl: string;
+	fileSize: number;
+	status: "success" | "failed" | "skipped";
+	errorMessage?: string;
+	duration: number;
+}
+
+interface MediaLink {
+	fullMatch: string;
+	type: "local" | "remote";
+	path: string;
+	alt: string;
+	startIndex: number;
+	endIndex: number;
+}
 
 export default class S3UploaderPlugin extends Plugin {
 	settings: S3UploaderSettings;
 	s3: S3Client;
 	pasteFunction: pasteFunction;
+	private skipAutoUploadPaths: Set<string> = new Set();
 
 	private async replaceText(
 		editor: Editor,
@@ -202,6 +245,554 @@ export default class S3UploaderPlugin extends Plugin {
 		return matchesGlobPattern(filePath, this.settings.ignorePattern);
 	}
 
+	/**
+	 * Get Obsidian attachment folder path based on vault settings
+	 */
+	async getAttachmentFolder(currentNotePath?: string): Promise<string> {
+		const config = (this.app.vault as any).getConfig("attachmentFolderPath") || "";
+		const noteFile = currentNotePath
+			? this.app.vault.getAbstractFileByPath(currentNotePath)
+			: this.app.workspace.getActiveFile();
+
+		if (!config || config === "/") {
+			return "";
+		}
+
+		if (config === "./") {
+			// Same folder as current note
+			if (noteFile instanceof TFile) {
+				const parentPath = noteFile.parent?.path || "";
+				return parentPath;
+			}
+			return "";
+		}
+
+		if (config.startsWith("./")) {
+			// Subfolder relative to current note
+			if (noteFile instanceof TFile) {
+				const parentPath = noteFile.parent?.path || "";
+				const subfolder = config.slice(2);
+				return parentPath ? `${parentPath}/${subfolder}` : subfolder;
+			}
+			return config.slice(2);
+		}
+
+		// Absolute path in vault
+		return config;
+	}
+
+	/**
+	 * Save file to local attachment folder (fallback when S3 upload fails)
+	 */
+	async saveToLocal(
+		file: File,
+		originalFileName: string,
+	): Promise<string> {
+		const folder = await this.getAttachmentFolder();
+		const path = folder ? `${folder}/${originalFileName}` : originalFileName;
+
+		// Ensure folder exists
+		if (folder) {
+			const folderExists = this.app.vault.getAbstractFileByPath(folder);
+			if (!folderExists) {
+				await this.app.vault.createFolder(folder);
+			}
+		}
+
+		// Mark path to skip auto-upload
+		this.skipAutoUploadPaths.add(path);
+
+		const buf = await file.arrayBuffer();
+		await this.app.vault.adapter.writeBinary(path, new Uint8Array(buf));
+
+		// Remove from skip list after a delay
+		setTimeout(() => {
+			this.skipAutoUploadPaths.delete(path);
+		}, 1000);
+
+		return path;
+	}
+
+	/**
+	 * Parse media link at cursor position
+	 */
+	parseMediaLink(line: string, ch: number): MediaLink | null {
+		// Wikilink format: ![[path|alt]]
+		const wikilinkRegex = /!\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
+		// Markdown format: ![alt](url)
+		const markdownRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+
+		let match;
+
+		// Check wikilinks
+		while ((match = wikilinkRegex.exec(line)) !== null) {
+			if (ch >= match.index && ch <= match.index + match[0].length) {
+				const path = match[1];
+				const isRemote = /^https?:\/\//.test(path);
+				return {
+					fullMatch: match[0],
+					type: isRemote ? "remote" : "local",
+					path: path,
+					alt: match[2] || "",
+					startIndex: match.index,
+					endIndex: match.index + match[0].length,
+				};
+			}
+		}
+
+		// Check markdown links
+		while ((match = markdownRegex.exec(line)) !== null) {
+			if (ch >= match.index && ch <= match.index + match[0].length) {
+				const url = match[2];
+				const isRemote = /^https?:\/\//.test(url);
+				return {
+					fullMatch: match[0],
+					type: isRemote ? "remote" : "local",
+					path: url,
+					alt: match[1] || "",
+					startIndex: match.index,
+					endIndex: match.index + match[0].length,
+				};
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Check if S3 object exists by key
+	 */
+	async s3ObjectExists(key: string): Promise<boolean> {
+		if (!this.s3) return false;
+		try {
+			await this.s3.send(
+				new HeadObjectCommand({
+					Bucket: this.settings.bucket,
+					Key: key,
+				}),
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Delete S3 object
+	 */
+	async deleteS3Object(key: string): Promise<void> {
+		if (!this.s3) {
+			throw new Error("S3 client not configured");
+		}
+		await this.s3.send(
+			new DeleteObjectCommand({
+				Bucket: this.settings.bucket,
+				Key: key,
+			}),
+		);
+	}
+
+	/**
+	 * Download file from URL to local attachment folder
+	 */
+	async downloadFromS3(url: string, currentNotePath?: string): Promise<string> {
+		const response = await requestUrl({ url });
+		if (response.status !== 200) {
+			throw new Error(`Failed to download: ${response.status}`);
+		}
+
+		// Extract filename from URL
+		const urlPath = new URL(url).pathname;
+		const fileName = urlPath.split("/").pop() || `download_${Date.now()}`;
+
+		const folder = await this.getAttachmentFolder(currentNotePath);
+		const localPath = folder ? `${folder}/${fileName}` : fileName;
+
+		// Ensure folder exists
+		if (folder) {
+			const folderExists = this.app.vault.getAbstractFileByPath(folder);
+			if (!folderExists) {
+				await this.app.vault.createFolder(folder);
+			}
+		}
+
+		// Mark path to skip auto-upload
+		this.skipAutoUploadPaths.add(localPath);
+
+		await this.app.vault.adapter.writeBinary(
+			localPath,
+			new Uint8Array(response.arrayBuffer),
+		);
+
+		// Remove from skip list after a delay
+		setTimeout(() => {
+			this.skipAutoUploadPaths.delete(localPath);
+		}, 1000);
+
+		return localPath;
+	}
+
+	/**
+	 * Extract S3 key from URL
+	 */
+	extractS3KeyFromUrl(url: string): string | null {
+		try {
+			const urlObj = new URL(url);
+			// Handle both path-style and host-style URLs
+			let path = urlObj.pathname;
+			if (path.startsWith("/")) {
+				path = path.slice(1);
+			}
+			// If path-style, remove bucket name
+			if (
+				this.settings.forcePathStyle &&
+				path.startsWith(this.settings.bucket + "/")
+			) {
+				path = path.slice(this.settings.bucket.length + 1);
+			}
+			return path || null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Scan markdown files for local image links
+	 */
+	async scanLocalImages(
+		scope: "vault" | "folder",
+		folderPath?: string,
+	): Promise<BatchTask[]> {
+		const tasks: BatchTask[] = [];
+		let files: TFile[];
+
+		if (scope === "vault") {
+			files = this.app.vault.getMarkdownFiles();
+		} else {
+			const folder = folderPath
+				? this.app.vault.getAbstractFileByPath(folderPath)
+				: null;
+			if (!(folder instanceof TFolder)) {
+				return tasks;
+			}
+			files = this.app.vault.getMarkdownFiles().filter((f) =>
+				f.path.startsWith(folder.path + "/"),
+			);
+		}
+
+		const wikilinkRegex = /!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
+
+		for (const file of files) {
+			const content = await this.app.vault.read(file);
+			let match;
+
+			while ((match = wikilinkRegex.exec(content)) !== null) {
+				const localPath = match[1];
+				// Skip if already a URL
+				if (/^https?:\/\//.test(localPath)) continue;
+
+				// Check if file exists
+				const linkedFile =
+					this.app.metadataCache.getFirstLinkpathDest(localPath, file.path);
+				if (
+					linkedFile instanceof TFile &&
+					/\.(jpg|jpeg|png|gif|webp|bmp|svg|mp4|webm|mp3|wav|pdf)$/i.test(
+						linkedFile.path,
+					)
+				) {
+					tasks.push({
+						file: linkedFile,
+						notePath: file.path,
+						matchText: match[0],
+						localPath: linkedFile.path,
+					});
+				}
+			}
+		}
+
+		return tasks;
+	}
+
+	/**
+	 * Execute batch upload
+	 */
+	async executeBatchUpload(
+		tasks: BatchTask[],
+		progressCallback?: (current: number, total: number) => void,
+	): Promise<LogEntry[]> {
+		const logs: LogEntry[] = [];
+		const processedHashes = new Set<string>();
+		let current = 0;
+
+		for (const task of tasks) {
+			current++;
+			progressCallback?.(current, tasks.length);
+
+			const startTime = Date.now();
+			const fileContent = await this.app.vault.readBinary(task.file);
+			const hash = await generateFileHash(new Uint8Array(fileContent));
+
+			// Skip if already processed (same hash)
+			if (processedHashes.has(hash)) {
+				logs.push({
+					timestamp: new Date().toISOString(),
+					fileName: task.file.name,
+					originalPath: task.localPath,
+					newUrl: "",
+					fileSize: task.file.stat.size,
+					status: "skipped",
+					errorMessage: "Duplicate file (same hash)",
+					duration: Date.now() - startTime,
+				});
+				continue;
+			}
+
+			const ext = task.file.extension;
+			const newFileName = `${hash}.${ext}`;
+
+			// Get note file for basename variable replacement
+			const noteFile = this.app.vault.getAbstractFileByPath(task.notePath);
+			const basename = noteFile instanceof TFile ? noteFile.basename.replace(/ /g, "-") : "";
+
+			// Replace variables in folder path
+			const currentDate = new Date();
+			const folder = (this.settings.folder || "")
+				.replace("${year}", currentDate.getFullYear().toString())
+				.replace("${month}", String(currentDate.getMonth() + 1).padStart(2, "0"))
+				.replace("${day}", String(currentDate.getDate()).padStart(2, "0"))
+				.replace("${basename}", basename);
+
+			const key = folder ? `${folder}/${newFileName}` : newFileName;
+
+			// Check if already exists on S3
+			const exists = await this.s3ObjectExists(key);
+			if (exists) {
+				processedHashes.add(hash);
+				// Still update the link
+				const url = this.settings.imageUrlPath + key;
+				await this.updateLinkInNote(task.notePath, task.matchText, url, task.file.extension);
+
+				logs.push({
+					timestamp: new Date().toISOString(),
+					fileName: task.file.name,
+					originalPath: task.localPath,
+					newUrl: url,
+					fileSize: task.file.stat.size,
+					status: "skipped",
+					errorMessage: "Already exists on S3",
+					duration: Date.now() - startTime,
+				});
+				continue;
+			}
+
+			try {
+				const file = new File([fileContent], task.file.name, {
+					type: getMimeType(task.file.extension),
+				});
+				const url = await this.uploadFile(file, key);
+				processedHashes.add(hash);
+
+				// Update link in note
+				await this.updateLinkInNote(task.notePath, task.matchText, url, task.file.extension);
+
+				// Delete local file if setting enabled
+				if (this.settings.deleteLocalAfterUpload) {
+					await this.app.vault.trash(task.file, true);
+				}
+
+				logs.push({
+					timestamp: new Date().toISOString(),
+					fileName: task.file.name,
+					originalPath: task.localPath,
+					newUrl: url,
+					fileSize: task.file.stat.size,
+					status: "success",
+					duration: Date.now() - startTime,
+				});
+			} catch (error) {
+				logs.push({
+					timestamp: new Date().toISOString(),
+					fileName: task.file.name,
+					originalPath: task.localPath,
+					newUrl: "",
+					fileSize: task.file.stat.size,
+					status: "failed",
+					errorMessage: error.message,
+					duration: Date.now() - startTime,
+				});
+			}
+		}
+
+		return logs;
+	}
+
+	/**
+	 * Update link in note file
+	 */
+	async updateLinkInNote(
+		notePath: string,
+		oldLink: string,
+		newUrl: string,
+		extension: string,
+	): Promise<void> {
+		const noteFile = this.app.vault.getAbstractFileByPath(notePath);
+		if (!(noteFile instanceof TFile)) return;
+
+		let content = await this.app.vault.read(noteFile);
+		const mediaType = getMediaType(extension);
+		const newLink = wrapFileDependingOnType(newUrl, mediaType, "");
+		content = content.split(oldLink).join(newLink);
+		await this.app.vault.modify(noteFile, content);
+	}
+
+	/**
+	 * Generate batch log file
+	 */
+	async generateBatchLog(logs: LogEntry[], scope: string): Promise<string> {
+		if (!this.settings.enableBatchLog) return "";
+
+		const folder = this.settings.batchLogFolder;
+		if (folder) {
+			const folderExists = this.app.vault.getAbstractFileByPath(folder);
+			if (!folderExists) {
+				await this.app.vault.createFolder(folder);
+			}
+		}
+
+		const now = new Date();
+		const fileName = `s3-upload-log-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}.md`;
+		const filePath = folder ? `${folder}/${fileName}` : fileName;
+
+		const successCount = logs.filter((l) => l.status === "success").length;
+		const failedCount = logs.filter((l) => l.status === "failed").length;
+		const skippedCount = logs.filter((l) => l.status === "skipped").length;
+		const totalDuration = logs.reduce((sum, l) => sum + l.duration, 0);
+
+		let content = `# S3 Upload Log - ${now.toISOString()}\n\n`;
+		content += `## Summary\n`;
+		content += `- Scope: ${scope}\n`;
+		content += `- Total: ${logs.length} files\n`;
+		content += `- Success: ${successCount}\n`;
+		content += `- Failed: ${failedCount}\n`;
+		content += `- Skipped: ${skippedCount}\n`;
+		content += `- Duration: ${(totalDuration / 1000).toFixed(2)}s\n\n`;
+
+		content += `## Details\n`;
+		content += `| File | Status | Size | Original Path | New URL | Duration | Error |\n`;
+		content += `|------|--------|------|---------------|---------|----------|-------|\n`;
+
+		for (const log of logs) {
+			const size = filesize(log.fileSize);
+			const duration = `${(log.duration / 1000).toFixed(2)}s`;
+			const error = log.errorMessage || "";
+			content += `| ${log.fileName} | ${log.status} | ${size} | ${log.originalPath} | ${log.newUrl || "-"} | ${duration} | ${error} |\n`;
+		}
+
+		await this.app.vault.create(filePath, content);
+		return filePath;
+	}
+
+	/**
+	 * Start batch upload with progress modal
+	 */
+	async batchUpload(scope: "vault" | "folder", folderPath?: string): Promise<void> {
+		new Notice($("Scanning for local images..."));
+		const tasks = await this.scanLocalImages(scope, folderPath);
+
+		if (tasks.length === 0) {
+			new Notice($("No local images found to upload"));
+			return;
+		}
+
+		const confirmed = await new Promise<boolean>((resolve) => {
+			const modal = new BatchConfirmModal(this.app, tasks.length, resolve);
+			modal.open();
+		});
+
+		if (!confirmed) return;
+
+		new Notice($("Starting batch upload of ${count} files...", { count: tasks.length }));
+
+		const logs = await this.executeBatchUpload(tasks, (current, total) => {
+			if (current % 5 === 0 || current === total) {
+				new Notice($("Uploading: ${current}/${total}", { current, total }));
+			}
+		});
+
+		const successCount = logs.filter((l) => l.status === "success").length;
+		const failedCount = logs.filter((l) => l.status === "failed").length;
+
+		new Notice(
+			$("Batch upload complete: ${success} success, ${failed} failed", { success: successCount, failed: failedCount }),
+		);
+
+		if (this.settings.enableBatchLog) {
+			const logPath = await this.generateBatchLog(
+				logs,
+				scope === "vault" ? "Full Vault" : `Folder: ${folderPath}`,
+			);
+			if (logPath) {
+				new Notice($("Log saved to ${path}", { path: logPath }));
+			}
+		}
+	}
+
+	/**
+	 * Upload all local images in a specific file
+	 */
+	async uploadAllImagesInFile(noteFile: TFile): Promise<void> {
+		const content = await this.app.vault.read(noteFile);
+		const wikilinkRegex = /!\[\[([^\]|]+)(?:\|[^\]]*)?]]/g;
+		const tasks: BatchTask[] = [];
+
+		let match;
+		while ((match = wikilinkRegex.exec(content)) !== null) {
+			const localPath = match[1];
+			// Skip if already a URL
+			if (/^https?:\/\//.test(localPath)) continue;
+
+			// Check if file exists
+			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
+				localPath,
+				noteFile.path,
+			);
+			if (
+				linkedFile instanceof TFile &&
+				/\.(jpg|jpeg|png|gif|webp|bmp|svg|mp4|webm|mp3|wav|pdf)$/i.test(
+					linkedFile.path,
+				)
+			) {
+				tasks.push({
+					file: linkedFile,
+					notePath: noteFile.path,
+					matchText: match[0],
+					localPath: linkedFile.path,
+				});
+			}
+		}
+
+		if (tasks.length === 0) {
+			new Notice($("No local images found in this file"));
+			return;
+		}
+
+		new Notice($("Uploading ${count} images...", { count: tasks.length }));
+
+		const logs = await this.executeBatchUpload(tasks, (current, total) => {
+			if (current % 3 === 0 || current === total) {
+				new Notice($("Uploading: ${current}/${total}", { current, total }));
+			}
+		});
+
+		const successCount = logs.filter((l) => l.status === "success").length;
+		const failedCount = logs.filter((l) => l.status === "failed").length;
+		const skippedCount = logs.filter((l) => l.status === "skipped").length;
+
+		new Notice(
+			$("Upload complete: ${success} success, ${failed} failed, ${skipped} skipped", { success: successCount, failed: failedCount, skipped: skippedCount }),
+		);
+	}
+
 	async uploadFile(file: File, key: string): Promise<string> {
 		// Check if S3 client is initialized
 		if (!this.s3) {
@@ -219,7 +810,9 @@ export default class S3UploaderPlugin extends Plugin {
 				ContentType: file.type,
 			}),
 		);
-		let urlString = this.settings.imageUrlPath + key;
+		// Encode each path segment to handle Chinese characters properly
+		const encodedKey = key.split('/').map(part => encodeURIComponent(part)).join('/');
+		let urlString = this.settings.imageUrlPath + encodedKey;
 		if (this.settings.queryStringKey && this.settings.queryStringValue) {
 			const urlObject = new URL(urlString);
 
@@ -245,7 +838,7 @@ export default class S3UploaderPlugin extends Plugin {
 		const originalSize = filesize(file.size); // Input file size
 		const newSize = filesize(compressedFile.size);
 
-		new Notice(`Image compressed from ${originalSize} to ${newSize}`);
+		new Notice($("Image compressed from ${originalSize} to ${newSize}", { originalSize, newSize }));
 
 		return fileBuffer;
 	}
@@ -306,7 +899,7 @@ export default class S3UploaderPlugin extends Plugin {
 			}
 
 			if (ev) ev.preventDefault();
-			new Notice("Uploading files...");
+			new Notice($("Uploading files..."));
 
 			// Remember cursor position before any changes
 			const cursorPos = editor.getCursor();
@@ -396,7 +989,22 @@ export default class S3UploaderPlugin extends Plugin {
 					return wrapFileDependingOnType(url, thisType, "");
 				} catch (error) {
 					console.error(error);
-					return `Error uploading file: ${error.message}`;
+					// Fallback to local save if enabled
+					if (this.settings.fallbackToLocal && !localUpload) {
+						try {
+							// Use newFileName (hash-based) for unique naming
+							const fallbackFile = new File([buf], newFileName, {
+								type: file.type,
+							});
+							const localPath = await this.saveToLocal(fallbackFile, newFileName);
+							new Notice($("S3 upload failed, saved locally: ${fileName}", { fileName: newFileName }));
+							return `![[${localPath}]]`;
+						} catch (localError) {
+							console.error("Local fallback also failed:", localError);
+							return $("Error uploading file: ${message}", { message: error.message });
+						}
+					}
+					return $("Error uploading file: ${message}", { message: error.message });
 				}
 			});
 
@@ -424,11 +1032,11 @@ export default class S3UploaderPlugin extends Plugin {
 						],
 					});
 
-					new Notice("All files uploaded successfully");
+					new Notice($("All files uploaded successfully"));
 				}
 			} catch (error) {
 				console.error("Error during upload or insertion:", error);
-				new Notice(`Error: ${error.message}`);
+				new Notice($("Error uploading file: ${message}", { message: error.message }));
 			}
 		}
 	}
@@ -485,7 +1093,7 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.addCommand({
 			id: "upload-image",
-			name: "Upload image",
+			name: $("Upload image"),
 			icon: "image-plus",
 			mobileOnly: false,
 			editorCallback: (editor) => {
@@ -513,11 +1121,78 @@ export default class S3UploaderPlugin extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("editor-drop", this.pasteFunction),
 		);
+
+		// Register batch upload commands
+		this.addCommand({
+			id: "batch-upload-vault",
+			name: $("Batch upload all local images in vault"),
+			icon: "upload-cloud",
+			callback: () => this.batchUpload("vault"),
+		});
+
+		this.addCommand({
+			id: "batch-upload-current-folder",
+			name: $("Batch upload local images in current folder"),
+			icon: "folder-up",
+			callback: () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile?.parent) {
+					this.batchUpload("folder", activeFile.parent.path);
+				} else {
+					new Notice($("No active folder"));
+				}
+			},
+		});
+
+		// Register folder right-click menu
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu: Menu, file) => {
+				if (file instanceof TFolder) {
+					menu.addItem((item) => {
+						item.setTitle($("S3: Batch upload images"))
+							.setIcon("upload-cloud")
+							.onClick(() => this.batchUpload("folder", file.path));
+					});
+				}
+			}),
+		);
+
+		// Register editor right-click menu for media links
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
+				const cursor = editor.getCursor();
+				const line = editor.getLine(cursor.line);
+				const mediaLink = this.parseMediaLink(line, cursor.ch);
+
+				if (mediaLink) {
+					this.addMediaContextMenu(menu, mediaLink, editor, view);
+				}
+
+				// Always add "Upload all images in current file" option
+				menu.addItem((item) => {
+					item.setTitle($("S3: Upload all local images in this file"))
+						.setIcon("upload-cloud")
+						.onClick(async () => {
+							if (!view.file) {
+								new Notice($("No active file"));
+								return;
+							}
+							await this.uploadAllImagesInFile(view.file);
+						});
+				});
+			}),
+		);
+
 		// Add mobile-specific event monitoring
 		this.registerEvent(
 			this.app.vault.on("create", async (file) => {
 				if (!(file instanceof TFile)) return;
 				if (!file.path.match(/\.(jpg|jpeg|png|gif|webp)$/i)) return;
+
+				// Skip files created by internal operations (download, fallback save)
+				if (this.skipAutoUploadPaths.has(file.path)) {
+					return;
+				}
 
 				const activeView =
 					this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -557,15 +1232,221 @@ export default class S3UploaderPlugin extends Plugin {
 						);
 						activeView.editor.replaceRange("", from, to);
 					} else {
-						new Notice(`Failed to find: ${obsidianLink}`);
+						new Notice($("Failed to find: ${link}", { link: obsidianLink }));
 					}
 
 					await this.app.vault.delete(file);
 				} catch (error) {
-					new Notice(`Error processing file: ${error.message}`);
+					new Notice($("Error processing file: ${message}", { message: error.message }));
 				}
 			}),
 		);
+	}
+
+	/**
+	 * Add context menu items for media links
+	 */
+	addMediaContextMenu(
+		menu: Menu,
+		mediaLink: MediaLink,
+		editor: Editor,
+		view: MarkdownView,
+	): void {
+		if (mediaLink.type === "local") {
+			// Local file - offer to upload to S3
+			menu.addItem((item) => {
+				item.setTitle($("S3: Upload to cloud"))
+					.setIcon("upload-cloud")
+					.onClick(async () => {
+						try {
+							const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
+								mediaLink.path,
+								view.file?.path || "",
+							);
+							if (!(linkedFile instanceof TFile)) {
+								new Notice($("File not found"));
+								return;
+							}
+
+							const fileContent = await this.app.vault.readBinary(linkedFile);
+							const hash = await generateFileHash(new Uint8Array(fileContent));
+							const ext = linkedFile.extension;
+							const newFileName = `${hash}.${ext}`;
+							const folder = this.settings.folder || "";
+							const key = folder ? `${folder}/${newFileName}` : newFileName;
+
+							const file = new File([fileContent], linkedFile.name, {
+								type: getMimeType(ext),
+							});
+
+							new Notice($("Uploading to S3..."));
+							const url = await this.uploadFile(file, key);
+
+							// Replace link in editor
+							const line = editor.getLine(editor.getCursor().line);
+							const mediaType = getMediaType(ext);
+							const newLink = wrapFileDependingOnType(url, mediaType, "");
+							const newLine = line.substring(0, mediaLink.startIndex) +
+								newLink +
+								line.substring(mediaLink.endIndex);
+
+							const cursor = editor.getCursor();
+							editor.setLine(cursor.line, newLine);
+
+							// Delete local file if setting enabled
+							if (this.settings.deleteLocalAfterUpload) {
+								await this.app.vault.trash(linkedFile, true);
+							}
+
+							new Notice($("Uploaded successfully!"));
+						} catch (error) {
+							new Notice($("Upload failed: ${message}", { message: error.message }));
+						}
+					});
+			});
+
+			// Delete local file
+			menu.addItem((item) => {
+				item.setTitle($("S3: Delete local file"))
+					.setIcon("trash-2")
+					.onClick(async () => {
+						try {
+							const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
+								mediaLink.path,
+								view.file?.path || "",
+							);
+							if (!(linkedFile instanceof TFile)) {
+								new Notice($("File not found"));
+								return;
+							}
+
+							// Confirm deletion
+							const confirmed = await new Promise<boolean>((resolve) => {
+								const modal = new DeleteConfirmModal(
+									this.app,
+									linkedFile.path,
+									resolve,
+								);
+								modal.open();
+							});
+
+							if (!confirmed) return;
+
+							// Delete the file
+							await this.app.vault.trash(linkedFile, true);
+
+							// Remove the link from editor
+							const line = editor.getLine(editor.getCursor().line);
+							const newLine = line.substring(0, mediaLink.startIndex) +
+								line.substring(mediaLink.endIndex);
+
+							const cursor = editor.getCursor();
+							editor.setLine(cursor.line, newLine.trim());
+
+							new Notice($("Local file deleted!"));
+						} catch (error) {
+							new Notice($("Delete failed: ${message}", { message: error.message }));
+						}
+					});
+			});
+
+			// Rename alt text (only for local images)
+			menu.addItem((item) => {
+				item.setTitle($("S3: Rename description"))
+					.setIcon("pencil")
+					.onClick(async () => {
+						const newAlt = await new Promise<string | null>((resolve) => {
+							const modal = new RenameAltModal(this.app, mediaLink.alt, resolve);
+							modal.open();
+						});
+
+						if (newAlt === null) return;
+
+						const line = editor.getLine(editor.getCursor().line);
+						let newLink: string;
+
+						// Handle wikilink format ![[path|alt]]
+						if (mediaLink.fullMatch.startsWith("![[")) {
+							if (newAlt) {
+								newLink = `![[${mediaLink.path}|${newAlt}]]`;
+							} else {
+								newLink = `![[${mediaLink.path}]]`;
+							}
+						} else {
+							// Handle markdown format ![alt](url)
+							newLink = `![${newAlt}](${mediaLink.path})`;
+						}
+
+						const newLine = line.substring(0, mediaLink.startIndex) +
+							newLink +
+							line.substring(mediaLink.endIndex);
+
+						const cursor = editor.getCursor();
+						editor.setLine(cursor.line, newLine);
+						new Notice($("Description updated!"));
+					});
+			});
+		} else {
+			// Remote URL - offer to download or delete
+			menu.addItem((item) => {
+				item.setTitle($("S3: Download to local"))
+					.setIcon("download")
+					.onClick(async () => {
+						try {
+							new Notice($("Downloading from S3..."));
+							const localPath = await this.downloadFromS3(mediaLink.path, view.file?.path);
+
+							// Replace link in editor
+							const line = editor.getLine(editor.getCursor().line);
+							const newLink = `![[${localPath}]]`;
+							const newLine = line.substring(0, mediaLink.startIndex) +
+								newLink +
+								line.substring(mediaLink.endIndex);
+
+							const cursor = editor.getCursor();
+							editor.setLine(cursor.line, newLine);
+
+							new Notice($("Downloaded to ${path}", { path: localPath }));
+						} catch (error) {
+							new Notice($("Download failed: ${message}", { message: error.message }));
+						}
+					});
+			});
+
+			// Check if it's an S3 URL from our bucket
+			const s3Key = this.extractS3KeyFromUrl(mediaLink.path);
+			if (s3Key) {
+				menu.addItem((item) => {
+					item.setTitle($("S3: Delete from cloud"))
+						.setIcon("trash-2")
+						.onClick(async () => {
+							const confirmed = await new Promise<boolean>((resolve) => {
+								const modal = new DeleteConfirmModal(this.app, s3Key, resolve);
+								modal.open();
+							});
+
+							if (!confirmed) return;
+
+							try {
+								new Notice($("Deleting from S3..."));
+								await this.deleteS3Object(s3Key);
+
+								// Remove the link from editor
+								const line = editor.getLine(editor.getCursor().line);
+								const newLine = line.substring(0, mediaLink.startIndex) +
+									line.substring(mediaLink.endIndex);
+
+								const cursor = editor.getCursor();
+								editor.setLine(cursor.line, newLine.trim());
+
+								new Notice($("Deleted from S3!"));
+							} catch (error) {
+								new Notice($("Delete failed: ${message}", { message: error.message }));
+							}
+						});
+				});
+			}
+		}
 	}
 
 	onunload() {}
@@ -619,7 +1500,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Settings for S3 Image Uploader" });
+		containerEl.createEl("h2", { text: $("Settings for S3 Image Uploader") });
 
 		containerEl.createEl("br");
 
@@ -636,8 +1517,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		containerEl.createEl("br");
 
 		new Setting(containerEl)
-			.setName("AWS Access Key ID")
-			.setDesc("AWS access key ID for a user with S3 access.")
+			.setName($("AWS Access Key ID"))
+			.setDesc($("AWS access key ID for a user with S3 access."))
 			.addText((text) => {
 				wrapTextWithPasswordHide(text);
 				text.setPlaceholder("access key")
@@ -650,8 +1531,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("AWS Secret Key")
-			.setDesc("AWS secret key for that user.")
+			.setName($("AWS Secret Key"))
+			.setDesc($("AWS secret key for that user."))
 			.addText((text) => {
 				wrapTextWithPasswordHide(text);
 				text.setPlaceholder("secret key")
@@ -664,8 +1545,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Region")
-			.setDesc("AWS region of the S3 bucket.")
+			.setName($("Region"))
+			.setDesc($("AWS region of the S3 bucket."))
 			.addText((text) =>
 				text
 					.setPlaceholder("aws region")
@@ -678,8 +1559,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("S3 Bucket")
-			.setDesc("S3 bucket name.")
+			.setName($("S3 Bucket"))
+			.setDesc($("S3 bucket name."))
 			.addText((text) =>
 				text
 					.setPlaceholder("bucket name")
@@ -692,9 +1573,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bucket folder")
+			.setName($("Bucket folder"))
 			.setDesc(
-				"Optional folder in s3 bucket. Support the use of ${year}, ${month}, ${day} and ${basename} variables.",
+				$("Optional folder in s3 bucket. Support the use of ${year}, ${month}, ${day} and ${basename} variables."),
 			)
 			.addText((text) =>
 				text
@@ -707,9 +1588,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Upload on drag")
+			.setName($("Upload on drag"))
 			.setDesc(
-				"Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note.",
+				$("Upload drag and drop images as well as pasted images. To override this setting on a per-document basis, you can add `uploadOnDrag: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -721,9 +1602,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload video files")
+			.setName($("Upload video files"))
 			.setDesc(
-				"Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note.",
+				$("Upload videos. To override this setting on a per-document basis, you can add `uploadVideo: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -735,9 +1616,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload audio files")
+			.setName($("Upload audio files"))
 			.setDesc(
-				"Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note.",
+				$("Upload audio files. To override this setting on a per-document basis, you can add `uploadAudio: true` to YAML frontmatter of the note."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -749,9 +1630,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Upload pdf files")
+			.setName($("Upload pdf files"))
 			.setDesc(
-				"Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files.",
+				$("Upload and embed PDF files. To override this setting on a per-document basis, you can add `uploadPdf: true` to YAML frontmatter of the note. Local uploads are not supported for PDF files."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -763,9 +1644,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Copy to local folder")
+			.setName($("Copy to local folder"))
 			.setDesc(
-				"Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note.  This will copy the images to a folder in your local file system, instead of s3.",
+				$('Copy images to local folder instead of s3. To override this setting on a per-document basis, you can add `localUpload: true` to YAML frontmatter of the note. This will copy the images to a folder in your local file system, instead of s3.'),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -777,9 +1658,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Local folder")
+			.setName($("Local folder"))
 			.setDesc(
-				'Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note.  This affects only local uploads.',
+				$('Local folder to save images, instead of s3. To override this setting on a per-document basis, you can add `uploadFolder: "myFolder"` to YAML frontmatter of the note. This affects only local uploads.'),
 			)
 			.addText((text) =>
 				text
@@ -792,8 +1673,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Use custom endpoint")
-			.setDesc("Use the custom api endpoint below.")
+			.setName($("Use custom endpoint"))
+			.setDesc($("Use the custom api endpoint below."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomEndpoint)
@@ -805,9 +1686,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Custom S3 Endpoint")
+			.setName($("Custom S3 Endpoint"))
 			.setDesc(
-				"Optionally set a custom endpoint for any S3 compatible storage provider.",
+				$("Optionally set a custom endpoint for any S3 compatible storage provider."),
 			)
 			.addText((text) =>
 				text
@@ -825,9 +1706,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("S3 Path Style URLs")
+			.setName($("S3 Path Style URLs"))
 			.setDesc(
-				"Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com).",
+				$("Advanced option to force using (legacy) path-style s3 URLs (s3.myhost.com/bucket) instead of the modern AWS standard host-style (bucket.s3.myhost.com)."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -840,8 +1721,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Use custom image URL")
-			.setDesc("Use the custom image URL below.")
+			.setName($("Use custom image URL"))
+			.setDesc($("Use the custom image URL below."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.useCustomImageUrl)
@@ -853,9 +1734,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Custom Image URL")
+			.setName($("Custom Image URL"))
 			.setDesc(
-				"Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN.",
+				$("Advanced option to force inserting custom image URLs. This option is helpful if you are using CDN."),
 			)
 			.addText((text) =>
 				text
@@ -872,9 +1753,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bypass local CORS check")
+			.setName($("Bypass local CORS check"))
 			.setDesc(
-				"Bypass local CORS preflight checks - it might work on later versions of Obsidian.",
+				$("Bypass local CORS preflight checks - it might work on later versions of Obsidian."),
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -886,8 +1767,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					});
 			});
 		new Setting(containerEl)
-			.setName("Query String Key")
-			.setDesc("Appended to the end of the URL. Optional")
+			.setName($("Query String Key"))
+			.setDesc($("Appended to the end of the URL. Optional"))
 			.addText((text) =>
 				text
 					.setPlaceholder("Empty means no query string key")
@@ -899,8 +1780,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Query String Value")
-			.setDesc("Appended to the end of the URL. Optional")
+			.setName($("Query String Value"))
+			.setDesc($("Appended to the end of the URL. Optional"))
 			.addText((text) =>
 				text
 					.setPlaceholder("Empty means no query string value")
@@ -912,8 +1793,8 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Enable Image Compression")
-			.setDesc("This will reduce the size of images before uploading.")
+			.setName($("Enable Image Compression"))
+			.setDesc($("This will reduce the size of images before uploading."))
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.enableImageCompression)
@@ -928,9 +1809,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 		// Always create the compression settings, but control visibility
 		this.compressionSizeSettings = new Setting(containerEl)
-			.setName("Max Image Size")
+			.setName($("Max Image Size"))
 			.setDesc(
-				"Maximum size of the image after compression in MB. Default is 1MB.",
+				$("Maximum size of the image after compression in MB. Default is 1MB."),
 			)
 			.addText((text) =>
 				text
@@ -943,7 +1824,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 						const newValue = parseFloat(value);
 						if (isNaN(newValue) || newValue <= 0) {
 							new Notice(
-								"Max Image Compression Size must be a number greater than 0",
+								$("Max Image Compression Size must be a number greater than 0"),
 							);
 							return;
 						}
@@ -954,9 +1835,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			);
 
 		this.compressionQualitySettings = new Setting(containerEl)
-			.setName("Image Compression Quality")
+			.setName($("Image Compression Quality"))
 			.setDesc(
-				"Maximum quality of the image after compression. Default is 0.7.",
+				$("Maximum quality of the image after compression. Default is 0.7."),
 			)
 			.addSlider((slider) => {
 				slider.setDynamicTooltip();
@@ -969,9 +1850,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 			});
 
 		this.compressionDimensionSettings = new Setting(containerEl)
-			.setName("Max Image Width or Height")
+			.setName($("Max Image Width or Height"))
 			.setDesc(
-				"Maximum width or height of the image after compression. Default is 4096px.",
+				$("Maximum width or height of the image after compression. Default is 4096px."),
 			)
 			.addText((text) =>
 				text
@@ -984,7 +1865,7 @@ class S3UploaderSettingTab extends PluginSettingTab {
 
 						if (isNaN(parsedValue) || parsedValue <= 0) {
 							new Notice(
-								"Max Image Width or Height must be a number greater than 0",
+								$("Max Image Width or Height must be a number greater than 0"),
 							);
 							return;
 						}
@@ -1001,9 +1882,9 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		);
 
 		new Setting(containerEl)
-			.setName("Ignore Pattern")
+			.setName($("Ignore Pattern"))
 			.setDesc(
-				"Glob pattern to ignore files/folders. Use * for any characters, ** for any path, ? for single character. Separate multiple patterns with commas. Example: 'private/*, **/drafts/**, temp*'",
+				$("Glob pattern to ignore files/folders. Use * for any characters, ** for any path, ? for single character. Separate multiple patterns with commas. Example: 'private/*, **/drafts/**, temp*'"),
 			)
 			.addText((text) =>
 				text
@@ -1011,6 +1892,64 @@ class S3UploaderSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.ignorePattern)
 					.onChange(async (value) => {
 						this.plugin.settings.ignorePattern = value.trim();
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		// New settings section
+		containerEl.createEl("h3", { text: $("Advanced Upload Settings") });
+
+		new Setting(containerEl)
+			.setName($("Fallback to local on upload failure"))
+			.setDesc(
+				$("When S3 upload fails, save the file to local attachment folder instead."),
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.fallbackToLocal)
+					.onChange(async (value) => {
+						this.plugin.settings.fallbackToLocal = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName($("Delete local file after upload"))
+			.setDesc(
+				$("Delete the local file after successfully uploading to S3. Files will be moved to system trash."),
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.deleteLocalAfterUpload)
+					.onChange(async (value) => {
+						this.plugin.settings.deleteLocalAfterUpload = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName($("Enable batch upload log"))
+			.setDesc(
+				$("Generate a log file after batch upload operations with details about each file."),
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.enableBatchLog)
+					.onChange(async (value) => {
+						this.plugin.settings.enableBatchLog = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName($("Batch log folder"))
+			.setDesc($("Folder to store batch upload log files."))
+			.addText((text) =>
+				text
+					.setPlaceholder(".s3-logs")
+					.setValue(this.plugin.settings.batchLogFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.batchLogFolder = value.trim();
 						await this.plugin.saveSettings();
 					}),
 			);
@@ -1208,4 +2147,197 @@ function matchesGlobPattern(filePath: string, pattern: string): boolean {
 	return patterns.some((p) => {
 		return minimatch(filePath, p);
 	});
+}
+
+/**
+ * Get MIME type from file extension
+ */
+function getMimeType(extension: string): string {
+	const mimeTypes: Record<string, string> = {
+		jpg: "image/jpeg",
+		jpeg: "image/jpeg",
+		png: "image/png",
+		gif: "image/gif",
+		webp: "image/webp",
+		bmp: "image/bmp",
+		svg: "image/svg+xml",
+		mp4: "video/mp4",
+		webm: "video/webm",
+		mp3: "audio/mpeg",
+		wav: "audio/wav",
+		pdf: "application/pdf",
+	};
+	return mimeTypes[extension.toLowerCase()] || "application/octet-stream";
+}
+
+/**
+ * Get media type category from file extension
+ */
+function getMediaType(extension: string): string {
+	const ext = extension.toLowerCase();
+	if (["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext)) {
+		return "image";
+	}
+	if (["mp4", "webm"].includes(ext)) {
+		return "video";
+	}
+	if (["mp3", "wav"].includes(ext)) {
+		return "audio";
+	}
+	if (ext === "pdf") {
+		return "pdf";
+	}
+	return "image";
+}
+
+/**
+ * Modal for batch upload confirmation
+ */
+class BatchConfirmModal extends Modal {
+	private count: number;
+	private resolve: (value: boolean) => void;
+
+	constructor(app: App, count: number, resolve: (value: boolean) => void) {
+		super(app);
+		this.count = count;
+		this.resolve = resolve;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl("h2", { text: $("Batch Upload Confirmation") });
+		contentEl.createEl("p", {
+			text: $("Found ${count} local media files to upload. Continue?", { count: this.count }),
+		});
+
+		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
+
+		const confirmBtn = buttonContainer.createEl("button", {
+			text: $("Upload All"),
+			cls: "mod-cta",
+		});
+		confirmBtn.addEventListener("click", () => {
+			this.resolve(true);
+			this.close();
+		});
+
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
+		cancelBtn.addEventListener("click", () => {
+			this.resolve(false);
+			this.close();
+		});
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+/**
+ * Modal for renaming alt text
+ */
+class RenameAltModal extends Modal {
+	private currentAlt: string;
+	private resolve: (value: string | null) => void;
+
+	constructor(app: App, currentAlt: string, resolve: (value: string | null) => void) {
+		super(app);
+		this.currentAlt = currentAlt;
+		this.resolve = resolve;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl("h2", { text: $("Rename Description") });
+
+		const inputEl = contentEl.createEl("input", {
+			type: "text",
+			value: this.currentAlt,
+			cls: "rename-alt-input",
+		});
+		inputEl.style.width = "100%";
+		inputEl.style.marginBottom = "1em";
+
+		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
+
+		const confirmBtn = buttonContainer.createEl("button", {
+			text: $("Save"),
+			cls: "mod-cta",
+		});
+		confirmBtn.addEventListener("click", () => {
+			this.resolve(inputEl.value);
+			this.close();
+		});
+
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
+		cancelBtn.addEventListener("click", () => {
+			this.resolve(null);
+			this.close();
+		});
+
+		inputEl.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") {
+				this.resolve(inputEl.value);
+				this.close();
+			}
+		});
+
+		inputEl.focus();
+		inputEl.select();
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+/**
+ * Modal for delete confirmation
+ */
+class DeleteConfirmModal extends Modal {
+	private s3Key: string;
+	private resolve: (value: boolean) => void;
+
+	constructor(app: App, s3Key: string, resolve: (value: boolean) => void) {
+		super(app);
+		this.s3Key = s3Key;
+		this.resolve = resolve;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.createEl("h2", { text: $("Delete from S3") });
+		contentEl.createEl("p", {
+			text: $("Are you sure you want to delete this file from S3?"),
+		});
+		contentEl.createEl("code", { text: this.s3Key });
+		contentEl.createEl("p", {
+			text: $("This action cannot be undone."),
+			cls: "mod-warning",
+		});
+
+		const buttonContainer = contentEl.createDiv({ cls: "modal-button-container" });
+
+		const confirmBtn = buttonContainer.createEl("button", {
+			text: $("Delete"),
+			cls: "mod-warning",
+		});
+		confirmBtn.addEventListener("click", () => {
+			this.resolve(true);
+			this.close();
+		});
+
+		const cancelBtn = buttonContainer.createEl("button", { text: $("Cancel") });
+		cancelBtn.addEventListener("click", () => {
+			this.resolve(false);
+			this.close();
+		});
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
 }
