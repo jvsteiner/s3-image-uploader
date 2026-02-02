@@ -64,6 +64,7 @@ interface S3UploaderSettings {
 	imageCompressionQuality: number;
 	maxImageWidthOrHeight: number;
 	ignorePattern: string;
+	disableAutoUploadOnCreate: boolean;
 }
 
 const DEFAULT_SETTINGS: S3UploaderSettings = {
@@ -92,6 +93,7 @@ const DEFAULT_SETTINGS: S3UploaderSettings = {
 	imageCompressionQuality: 0.7,
 	maxImageWidthOrHeight: 4096,
 	ignorePattern: "",
+	disableAutoUploadOnCreate: false,
 };
 
 export default class S3UploaderPlugin extends Plugin {
@@ -516,6 +518,8 @@ export default class S3UploaderPlugin extends Plugin {
 		// Add mobile-specific event monitoring
 		this.registerEvent(
 			this.app.vault.on("create", async (file) => {
+				// Allow disabling this handler to prevent unwanted uploads from sync/external processes
+				if (this.settings.disableAutoUploadOnCreate) return;
 				if (!(file instanceof TFile)) return;
 				if (!file.path.match(/\.(jpg|jpeg|png|gif|webp)$/i)) return;
 
@@ -999,6 +1003,20 @@ class S3UploaderSettingTab extends PluginSettingTab {
 		this.toggleCompressionSettings(
 			this.plugin.settings.enableImageCompression,
 		);
+
+		new Setting(containerEl)
+			.setName("Disable auto-upload on file create")
+			.setDesc(
+				"Disable automatic upload when image files are created in the vault (e.g., via sync or external processes). Paste and drag-drop uploads will still work. Enable this if you experience unwanted uploads on startup or when using cloud sync.",
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.disableAutoUploadOnCreate)
+					.onChange(async (value) => {
+						this.plugin.settings.disableAutoUploadOnCreate = value;
+						await this.plugin.saveSettings();
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Ignore Pattern")
