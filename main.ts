@@ -485,6 +485,101 @@ export default class S3UploaderPlugin extends Plugin {
 
 		this.createS3Client();
 
+		// Add command to process images from external to S3 in one step
+		this.addCommand({
+			id: "convert-external-images-to-s3",
+			name: "Convert External Images to S3",
+			callback: async () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile && activeFile.extension === "md") {
+					// Step 1: Replace image ALT text with file hash
+					new Notice("Step 1/3: Replacing image ALT text with file hash...");
+					await this.replaceAltWithHash(activeFile);
+
+					new Notice("Step 2/3: Running Obsidian's Download attachments command...");
+					// Execute Obsidian's built-in download attachments command
+					const commands = (this.app as any).commands;
+					if (commands && commands.executeCommandById) {
+						try {
+							// Launch the Obsidian download attachments command
+							await commands.executeCommandById("editor:download-attachments");
+
+							// Show instructions to the user
+							new Notice("Please select files to download in the dialog and click Download", 8000);
+
+							// Wait for download to complete by polling the document state
+							let downloadComplete = false;
+							let attempts = 0;
+							const maxAttempts = 30; // Max 30 attempts (30 seconds)
+
+							new Notice("Waiting for downloads to complete...");
+
+							// Track document stability
+							let stableCount = 0;
+							let lastSnapshot = null;
+
+							while (!downloadComplete && attempts < maxAttempts) {
+								await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+								attempts++;
+
+								// Get current document state
+								const currentSnapshot = await this.getDocumentSnapshot(activeFile);
+
+								// Check if any downloads are detected yet
+								if (currentSnapshot.matchingPairs > 0) {
+									// If this is our first snapshot or if the content has changed
+									if (!lastSnapshot || lastSnapshot.content !== currentSnapshot.content) {
+										// Reset stability counter
+										stableCount = 0;
+										// Update last snapshot
+										lastSnapshot = currentSnapshot;
+
+										// Log the change
+										console.log(`Document changed: ${currentSnapshot.wikiLinksWithAlt} wiki links, ${currentSnapshot.s3Links} S3 links, ${currentSnapshot.matchingPairs} matching pairs`);
+									} else {
+										// Content is stable
+										stableCount++;
+
+										// If stable for 2 consecutive checks (2 seconds), consider download complete
+										if (stableCount >= 2) {
+											downloadComplete = true;
+											console.log(`Document stable for ${stableCount} seconds, download complete`);
+										}
+									}
+								}
+
+								// Update progress every 5 seconds
+								if (attempts % 5 === 0) {
+									if (lastSnapshot) {
+										new Notice(`Waiting for downloads to stabilize... (${attempts}s, found ${lastSnapshot.matchingPairs} files)`);
+									} else {
+										new Notice(`Waiting for downloads to start... (${attempts}s)`);
+									}
+								}
+							}
+
+							if (downloadComplete) {
+								// Step 3: Replace wiki links with S3 URLs
+								new Notice("Step 3/3: Replacing wiki links with S3 URLs...");
+								await this.processDownloadedImages(activeFile);
+
+								new Notice("✅ Image processing complete!");
+							} else {
+								new Notice("Download completion not detected after timeout. Please try running the command again from the beginning.");
+							}
+						} catch (error) {
+							console.error("Error executing download command:", error);
+							new Notice("Error during download step. Please try running the command again from the beginning.");
+						}
+					} else {
+						new Notice("Could not access Obsidian commands. Please try running the command again from the beginning.");
+					}
+				} else {
+					new Notice("No active markdown file");
+				}
+			}
+		});
+
 		this.addCommand({
 			id: "upload-image",
 			name: "Upload image",
@@ -572,7 +667,7 @@ export default class S3UploaderPlugin extends Plugin {
 		);
 	}
 
-	onunload() {}
+	onunload() { }
 
 	async loadSettings() {
 		this.settings = Object.assign(
@@ -584,6 +679,337 @@ export default class S3UploaderPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	/**
+	 * Process downloaded images in a file, replacing them with S3 links
+	 * This function is meant to be used after "Download attachments for current file" Obsidian command
+	 * It identifies wiki links and replaces them with corresponding S3 links, then removes duplicate S3 links
+	 */
+	async processDownloadedImages(file: TFile): Promise<void> {
+		try {
+			// Get the content of the file
+			const content = await this.app.vault.read(file);
+
+			// Get editor for this file
+			let editor: Editor | null = null;
+
+			// Try to find an open editor for this file
+			const leaves = this.app.workspace.getLeavesOfType("markdown");
+			for (const leaf of leaves) {
+				const view = leaf.view as MarkdownView;
+				if (view.file && view.file.path === file.path) {
+					editor = view.editor;
+					break;
+				}
+			}
+
+			// If no editor is found but we have an active editor, check if it's for the right file
+			if (!editor) {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView && activeView.file && activeView.file.path === file.path) {
+					editor = activeView.editor;
+				}
+			}
+
+			// Still no editor, we'll have to use file operations instead
+			if (!editor) {
+				new Notice("No editor found for this file, changes will be saved directly");
+				return; // Exit if no editor found
+			}
+
+			// Find all wiki links in the file with ALT text (format: ![[filename|alt]])
+			const wikiLinkRegex = /!\[\[(.*?)(?:\|(.*?))?\]\]/g;
+			const wikiMatches = [...content.matchAll(wikiLinkRegex)];
+
+			if (wikiMatches.length === 0) {
+				new Notice("No wiki links found in the document");
+				return;
+			}
+
+			// Filter wiki links to only include those with ALT text
+			const wikiLinksWithAlt = wikiMatches.filter(match => match[2] !== undefined);
+
+			if (wikiLinksWithAlt.length === 0) {
+				new Notice("No wiki links with ALT text found in the document");
+				return;
+			}
+
+			// Find all S3 links in the file
+			const s3LinkRegex = /!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+			const allS3Matches = [...content.matchAll(s3LinkRegex)];
+
+			if (allS3Matches.length === 0) {
+				new Notice("No S3 links found. Please process images manually.");
+				return;
+			}
+
+			// Save cursor position
+			const cursorPos = editor.getCursor();
+
+			// Map to track wiki links by ALT text hash part (without extension)
+			const wikiLinksByAltHash = new Map<string, { wikiLinks: string[], altText: string }>();
+
+			// Group wiki links by ALT text hash part
+			for (const wikiMatch of wikiLinksWithAlt) {
+				const wikiLink = wikiMatch[0]; // Complete wiki link: ![[filename|alt]]
+				const altText = wikiMatch[2]; // ALT text
+
+				// Extract hash part from ALT text (assuming format is hash.extension or just hash)
+				const hashPart = altText.includes('.') ? altText.substring(0, altText.indexOf('.')) : altText;
+
+				if (!wikiLinksByAltHash.has(hashPart)) {
+					wikiLinksByAltHash.set(hashPart, { wikiLinks: [], altText: altText });
+				}
+				wikiLinksByAltHash.get(hashPart)?.wikiLinks.push(wikiLink);
+
+				console.log(`Grouped wiki link: ${wikiLink} with hash part: ${hashPart} (full alt: ${altText})`);
+			}
+
+			// Map to store S3 links by filename hash part
+			const s3LinksByFilenameHash = new Map<string, string>();
+
+			// Find S3 links matching ALT texts by hash part
+			for (const s3Match of allS3Matches) {
+				const s3Link = s3Match[0]; // Complete S3 link: ![alt](url)
+				const s3Url = s3Match[2]; // URL from S3 link
+
+				// Extract the filename part from the URL
+				const urlFilename = s3Url.substring(s3Url.lastIndexOf('/') + 1);
+
+				// Extract hash part from filename (assuming format is hash.extension)
+				const hashPart = urlFilename.includes('.') ? urlFilename.substring(0, urlFilename.indexOf('.')) : urlFilename;
+
+				// Store S3 link by hash part
+				s3LinksByFilenameHash.set(hashPart, s3Link);
+
+				console.log(`Matched S3 link: ${s3Link} with filename hash: ${hashPart} (full filename: ${urlFilename})`);
+			}
+
+			// List to keep track of which S3 links to remove
+			const s3LinksToRemove: string[] = [];
+			let totalReplacements = 0;
+
+			// First, remove all matching S3 links
+			const updatedContent = editor.getValue();
+			let newContent = updatedContent;
+
+			// Process each group of wiki links with the same ALT text hash
+			for (const [hashPart, { wikiLinks, altText }] of wikiLinksByAltHash.entries()) {
+				// Find matching S3 link for this hash part
+				const matchingS3Link = s3LinksByFilenameHash.get(hashPart);
+
+				if (matchingS3Link) {
+					// Add S3 link to removal list
+					s3LinksToRemove.push(matchingS3Link);
+
+					console.log(`Will replace ${wikiLinks.length} wiki links with S3 link: ${matchingS3Link} (hash: ${hashPart})`);
+					totalReplacements += wikiLinks.length;
+				}
+			}
+
+			// Remove all matched S3 links
+			for (const s3Link of s3LinksToRemove) {
+				newContent = newContent.replace(s3Link, "");
+			}
+
+			// Update editor with content that has S3 links removed
+			editor.setValue(newContent);
+
+			// Now replace wiki links with corresponding S3 links
+			let processedCount = 0;
+
+			// Process each group of wiki links
+			for (const [hashPart, { wikiLinks, altText }] of wikiLinksByAltHash.entries()) {
+				// Find matching S3 link for this hash part
+				const matchingS3Link = s3LinksByFilenameHash.get(hashPart);
+
+				if (matchingS3Link) {
+					// Replace each wiki link with the S3 link
+					for (const wikiLink of wikiLinks) {
+						await this.replaceText(editor, wikiLink, matchingS3Link);
+						processedCount++;
+					}
+				}
+			}
+
+			// Restore cursor position
+			editor.setCursor(cursorPos);
+
+			new Notice(`Replaced ${processedCount} wiki links with S3 links and removed duplicates`);
+		} catch (error) {
+			console.error("Error in processDownloadedImages:", error);
+			new Notice(`Error processing images: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Replace ALT text in external image links with file hash
+	 * This downloads each image temporarily, calculates its hash, and updates the ALT text
+	 */
+	async replaceAltWithHash(file: TFile): Promise<void> {
+		try {
+			// Get editor for this file
+			let editor: Editor | null = null;
+
+			// Try to find an open editor for this file
+			const leaves = this.app.workspace.getLeavesOfType("markdown");
+			for (const leaf of leaves) {
+				const view = leaf.view as MarkdownView;
+				if (view.file && view.file.path === file.path) {
+					editor = view.editor;
+					break;
+				}
+			}
+
+			// If no editor is found but we have an active editor, check if it's for the right file
+			if (!editor) {
+				const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (activeView && activeView.file && activeView.file.path === file.path) {
+					editor = activeView.editor;
+				}
+			}
+
+			// Exit if no editor found
+			if (!editor) {
+				new Notice("No editor found for this file");
+				return;
+			}
+
+			// Get the content of the file
+			const content = editor.getValue();
+
+			// Find all external image links in the file
+			const externalImageRegex = /!\[(.*?)\]\((https?:\/\/.*?)\)/g;
+			const externalImageMatches = [...content.matchAll(externalImageRegex)];
+
+			if (externalImageMatches.length === 0) {
+				new Notice("No external image links found in the document");
+				return;
+			}
+
+			new Notice(`Processing ${externalImageMatches.length} images...`);
+
+			// Save cursor position
+			const cursorPos = editor.getCursor();
+
+			// Process each image link
+			let processedCount = 0;
+			const totalImages = externalImageMatches.length;
+
+			for (const match of externalImageMatches) {
+				const fullMatch = match[0]; // The entire ![alt](url) match
+				const altText = match[1]; // The alt text
+				const imageUrl = match[2]; // The URL
+
+				try {
+					// Extract filename from URL
+					const url = new URL(imageUrl);
+					const pathname = url.pathname;
+					const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+
+					// Download the image
+					const response = await requestUrl({
+						url: imageUrl,
+						method: "GET"
+					});
+
+					// Get the image data
+					const imageData = new Uint8Array(response.arrayBuffer);
+
+					// Generate hash from the image data
+					const hash = await generateFileHash(imageData);
+
+					// Create the extension part
+					const extension = filename.includes('.') ?
+						filename.substring(filename.lastIndexOf('.')) :
+						'';
+
+					// Create new alt text with hash
+					const newAltText = `${hash}${extension}`;
+
+					// Create new markdown with the new alt text
+					const newMarkdown = `![${newAltText}](${imageUrl})`;
+
+					// Replace in editor
+					await this.replaceText(editor, fullMatch, newMarkdown);
+					processedCount++;
+
+					if (processedCount % 5 === 0 || processedCount === totalImages) {
+						new Notice(`Processed ${processedCount}/${totalImages} images`);
+					}
+				} catch (error) {
+					console.error(`Error processing image ${imageUrl}:`, error);
+					new Notice(`Error processing image: ${error.message}`);
+				}
+			}
+
+			// Restore cursor position
+			editor.setCursor(cursorPos);
+
+			if (processedCount > 0) {
+				new Notice(`Successfully processed ${processedCount} images`);
+			}
+		} catch (error) {
+			console.error("Error in replaceAltWithHash:", error);
+			new Notice(`Error processing images: ${error.message}`);
+		}
+	}
+
+	/**
+	 * Get document snapshot with wiki links and S3 links
+	 * @returns Object with counts of wiki links with ALT and S3 links, and matching pairs
+	 */
+	private async getDocumentSnapshot(file: TFile): Promise<{
+		wikiLinksWithAlt: number,
+		s3Links: number,
+		matchingPairs: number,
+		content: string
+	}> {
+		// Get the content of the file
+		const content = await this.app.vault.read(file);
+
+		// Find all wiki links with ALT text (format: ![[filename|alt]])
+		const wikiLinkRegex = /!\[\[(.*?)\|(.*?)\]\]/g;
+		const wikiMatches = [...content.matchAll(wikiLinkRegex)];
+
+		// Find all S3 links in the file
+		const s3LinkRegex = /!\[.*?\]\((https?:\/\/.*?)\)/g;
+		const s3Matches = [...content.matchAll(s3LinkRegex)];
+
+		// Count matching pairs
+		let matchingPairs = 0;
+
+		if (wikiMatches.length > 0 && s3Matches.length > 0) {
+			// Extract hash parts from S3 links
+			const s3FilenameHashes = s3Matches.map(match => {
+				const url = match[1];
+				const filename = url.substring(url.lastIndexOf('/') + 1);
+				// Extract hash part (before extension if exists)
+				return filename.includes('.') ? filename.substring(0, filename.indexOf('.')) : filename;
+			});
+
+			// Count wiki links whose ALT hash part matches an S3 filename hash part
+			for (const wikiMatch of wikiMatches) {
+				const altText = wikiMatch[2];
+				if (altText) {
+					// Extract hash part from ALT text
+					const altHashPart = altText.includes('.') ?
+						altText.substring(0, altText.indexOf('.')) : altText;
+
+					if (s3FilenameHashes.some(hash => hash === altHashPart)) {
+						matchingPairs++;
+					}
+				}
+			}
+		}
+
+		return {
+			wikiLinksWithAlt: wikiMatches.length,
+			s3Links: s3Matches.length,
+			matchingPairs: matchingPairs,
+			content: content
+		};
 	}
 }
 
@@ -1126,9 +1552,8 @@ class ObsHttpHandler extends FetchHttpHandler {
 		}
 
 		const { port, method } = request;
-		const url = `${request.protocol}//${request.hostname}${
-			port ? `:${port}` : ""
-		}${path}`;
+		const url = `${request.protocol}//${request.hostname}${port ? `:${port}` : ""
+			}${path}`;
 		const body =
 			method === "GET" || method === "HEAD" ? undefined : request.body;
 
